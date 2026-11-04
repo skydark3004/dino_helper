@@ -233,18 +233,63 @@ function liveArrived(d) {
     live.iv += (iv - live.iv) * 0.15;
   }
   if (end !== live.end || !live.at) { live.end = end; live.at = now; }
+  // trễ hiển thị lớn = dữ liệu đến thưa (game ghi replay thưa / tool chậm)
+  if (d.live && live.iv > 0.6 && now - (live.lagLogAt || -1e9) > 300000) { live.lagLogAt = now; perfLog("lag", `dữ liệu đến mỗi ~${live.iv.toFixed(2)} s → bản đồ trễ ~${liveLag().toFixed(1)} s`); } // gọi ~7 lần/s -> chỉ ghi 1 lần / 5 phút
 }
-const liveLag = () => Math.min(1.5, Math.max(0.15, live.iv + 2 * live.dev));
+// trần 3,5 s: máy chưa chỉnh game ghi dày (IsleReplayConfig.bat) nhận dữ liệu mỗi 1–2 s -> vẫn chạy liền mạch, chỉ trễ hơn
+const liveLag = () => Math.min(3.5, Math.max(0.15, live.iv + 2 * live.dev));
 // thời gian hiển thị ở thời điểm now (ms, performance.now); không bao giờ lùi, không vượt dữ liệu đã có
 function liveTime(now) {
   const target = Math.min(live.end, live.end + (now - live.at) / 1000 - liveLag());
   if (live.tv === null || Math.abs(target - live.tv) > 2) live.tv = target;
   else {
     const dt = Math.min(0.1, Math.max(0, (now - live.prev) / 1000));
-    live.tv = Math.min(live.end, live.tv + Math.max(0, dt + (target - live.tv) * Math.min(1, dt * 3)));
+    // sắp chạy hết dữ liệu mà chưa có dữ liệu mới -> chậm dần thay vì dừng khựng
+    const room = live.end - live.tv, ease = Math.min(1, Math.max(0, room / Math.min(0.4, liveLag() * 0.5)));
+    live.tv = Math.min(live.end, live.tv + Math.max(0, dt * ease + (target - live.tv) * Math.min(1, dt * 3)));
   }
   live.prev = now;
   return live.tv;
+}
+
+// ---------- ghi chỗ chậm của trang về tool (perf_log.txt cạnh exe) ----------
+// khung hình treo, vẽ chậm, xử lý dữ liệu chậm, lâu không nhận dữ liệu, mất kết nối, trễ hiển thị lớn.
+// GỘP để không spam: mỗi loại gửi ngay lần đầu; các lần sau trong 30 s chỉ đếm + nhớ lần nặng nhất, rồi gửi 1 dòng tóm tắt
+// -> trang chậm liên tục cũng chỉ ~1 dòng / 30 s cho mỗi loại. Gom gửi mỗi 3 s (GET /log?m=...). Mở bằng file:// thì không gửi.
+const PERF_ON = location.protocol.startsWith("http"), PERF_WIN = 30000;
+const perfQ = [], perfW = {};
+let perfHiddenAt = 0; // trang bị ẩn (bị game che / thu nhỏ) -> trình duyệt dừng vẽ, không tính là treo
+document.addEventListener("visibilitychange", () => { perfHiddenAt = performance.now(); });
+const perfVisible = now => document.visibilityState === "visible" && now - perfHiddenAt > 1500;
+// val = độ nặng (ms, s) để chọn lần nặng nhất khi gộp
+function perfLog(key, msg, val) {
+  if (!PERF_ON) return;
+  const now = performance.now(), w = perfW[key];
+  if (!w || (w.n === 0 && now - w.start >= PERF_WIN)) { perfW[key] = { start: now, n: 0, max: -1, maxMsg: "" }; perfQ.push(msg); return; }
+  w.n++;
+  if ((val || 0) >= w.max) { w.max = val || 0; w.maxMsg = msg; }
+}
+function perfFlush() {
+  const now = performance.now();
+  for (const k in perfW) {
+    const w = perfW[k];
+    if (w.n > 0 && now - w.start >= PERF_WIN) {
+      perfQ.push(`↳ ${w.n} lần nữa trong ${((now - w.start) / 1000).toFixed(0)} s, nặng nhất: ${w.maxMsg}`);
+      w.start = now; w.n = 0; w.max = -1; w.maxMsg = "";
+    }
+  }
+}
+if (PERF_ON) {
+  setInterval(() => {
+    perfFlush();
+    if (!perfQ.length) return;
+    const m = (OVERLAY ? "overlay" : "bản đồ") + ` ${innerWidth}×${innerHeight}@${devicePixelRatio}: ` + perfQ.splice(0).join(" | ");
+    fetch("/log?m=" + encodeURIComponent(m.slice(0, 1500)), { cache: "no-store" }).catch(() => {});
+  }, 3000);
+  // GPU trình duyệt đang dùng (vẽ bằng CPU / "SwiftShader" -> dễ giật khi game chiếm GPU)
+  let gpu = "?";
+  try { const gl = document.createElement("canvas").getContext("webgl"), e = gl && gl.getExtension("WEBGL_debug_renderer_info"); gpu = e ? gl.getParameter(e.UNMASKED_RENDERER_WEBGL) : gl ? "webgl" : "không có WebGL"; } catch (e) {}
+  perfLog("open", "mở trang · GPU: " + gpu);
 }
 
 // ---------- báo khủng long người chơi mới vào vùng (chỉ khi đang quay) ----------
@@ -318,7 +363,17 @@ if (location.protocol.startsWith("http") && window.EventSource) {
   // Mở qua tool (http://127.0.0.1:...): tool đẩy dữ liệu mới vào ngay khi đọc xong, không cần kiểm tra
   const name = decodeURIComponent(location.pathname.split("/").slice(-2)[0]);
   const es = new EventSource("/events/" + encodeURIComponent(name));
-  es.onmessage = e => { try { const d = JSON.parse(e.data); if (!DATA || d.ver !== DATA.ver) applyData(d); } catch (err) {} };
+  let lastMsgAt = 0;
+  es.onmessage = e => {
+    const a0 = performance.now();
+    // lâu không nhận được dữ liệu (tool → trang) trong lúc đang quay
+    if (lastMsgAt && DATA && DATA.live && a0 - lastMsgAt > 3000 && perfVisible(a0))
+      perfLog("gap", `${((a0 - lastMsgAt) / 1000).toFixed(1)} s không nhận dữ liệu mới từ tool`, (a0 - lastMsgAt) / 1000);
+    lastMsgAt = a0;
+    try { const d = JSON.parse(e.data); if (!DATA || d.ver !== DATA.ver) applyData(d); } catch (err) {}
+    const ad = performance.now() - a0;
+    if (ad > 60) perfLog("apply", `xử lý dữ liệu mới mất ${ad.toFixed(0)} ms (${(e.data.length / 1024).toFixed(0)} KB, ${actors.length} đối tượng)`, ad);
+  };
   // mất kết nối với tool (tool tắt / khởi động lại ở cổng khác) -> báo trên bản đồ; EventSource tự thử nối lại
   es.onerror = () => { if (!sseDown) { sseDown = true; draw(); } };
   es.onopen = () => { if (sseDown) { sseDown = false; draw(); } };
@@ -487,6 +542,7 @@ const DETAIL_PX = 4096, OVERVIEW_PX = 2048;
 function makeCanvas(n, draw) { const c = document.createElement("canvas"); c.width = c.height = n; const g = c.getContext("2d"); draw(g, n); return c; }
 function buildMapCanvases() {
   if (gw.ready) return; // chỉ dựng 1 lần
+  const b0 = performance.now();
   gw.detail = makeCanvas(DETAIL_PX, (g, n) => {
     for (const im of gw.imgs) g.drawImage(im, 0, 0, n, n);
     g.fillStyle = "rgba(0,0,0,0.25)"; g.fillRect(0, 0, n, n);
@@ -495,6 +551,10 @@ function buildMapCanvases() {
   gw.ready = true; gw.imgErr = false;
   for (const im of gw.imgs) { im.onload = im.onerror = null; im.src = ""; } // giải phóng ảnh gốc (gỡ handler trước: src rỗng gây sự kiện lỗi)
   gw.imgs = [];
+  // việc nặng 1 lần lúc mở trang: ghi riêng, không tính khung hình này là "treo"
+  const bd = performance.now() - b0;
+  if (bd > 300) perfLog("build", `dựng ảnh bản đồ lần đầu mất ${bd.toFixed(0)} ms (1 lần lúc mở trang)`);
+  perfHiddenAt = performance.now();
   draw();
 }
 // Vẽ ảnh nền: chọn ảnh vừa đủ nét cho mức zoom, chỉ cắt đúng phần đang thấy trên màn hình
@@ -527,6 +587,7 @@ function updateBg(W, H, dpr) {
   if (s !== bgShift) { bgCv.style.transform = s; bgShift = s; }
 }
 function renderBg(W, H, dpr) {
+  bgRedrawn = true;
   const M = Math.round(BG_MARGIN * dpr), BW = W + 2 * M, BH = H + 2 * M;
   if (bgCv.width !== BW || bgCv.height !== BH) {
     bgCv.width = BW; bgCv.height = BH;
@@ -676,7 +737,7 @@ function endPick() { pickMode = 0; cv.classList.remove("pick"); hint.style.displ
 function niceStep(px) { const m = 120 / view.s; const p = Math.pow(10, Math.floor(Math.log10(m))); return [1, 2, 5, 10].map(k => k * p).find(v => v >= m); }
 // Gom nhiều yêu cầu vẽ (kéo, lăn chuột, phát) thành tối đa 1 lần mỗi khung hình.
 // Đang quay + xem thời điểm mới nhất: vẽ liên tục (tối đa ~60 khung/s, đủ mượt mà không tranh GPU với game).
-let drawQueued = false, lastFrame = 0, lastSide = 0, animNow = false;
+let drawQueued = false, lastFrame = 0, lastSide = 0, animNow = false, bgRedrawn = false;
 const MIN_FRAME_MS = 12; // màn 60 Hz: mọi khung; 120 Hz: 60 khung/s; 144 Hz: 72 khung/s
 const animating = () => follow && !playing && DATA && DATA.live;
 function draw() {
@@ -690,10 +751,16 @@ function frame(now) {
   if (animNow) {
     drawQueued = true; requestAnimationFrame(frame);
     if (now - lastFrame < MIN_FRAME_MS) return;
+    // khung hình bị treo (trình duyệt bận / chờ GPU khi game chiếm GPU)
+    if (lastFrame && now - lastFrame > 250 && perfVisible(now)) perfLog("stall", `khung hình treo ${(now - lastFrame).toFixed(0)} ms`, now - lastFrame);
     t = liveTime(now);
   }
   lastFrame = now;
+  bgRedrawn = false;
+  const r0 = performance.now();
   render();
+  const rd = performance.now() - r0;
+  if (rd > 50 && animNow) perfLog("render", `vẽ 1 khung mất ${rd.toFixed(0)} ms` + (bgRedrawn ? " (có vẽ lại nền bản đồ)" : ""), rd);
 }
 function render() {
   if (!cv.width) return;
@@ -774,6 +841,7 @@ function render() {
   // chấm (vẽ lớp nhỏ trước, khủng long sau cùng)
   const order = ["meat", "fish", "animal", "corpse", "player", "me"];
   const labels = [];
+  meArrow = null;
   for (const c of order) {
     if (!CATS[c] || !CATS[c].on) continue;
     ctx.fillStyle = CATS[c].hex;
@@ -802,6 +870,7 @@ function render() {
         const k = dpr * 1.05; // nhỏ lại cho vừa bản đồ
         ctx.beginPath(); ctx.moveTo(0, -10 * k); ctx.lineTo(7 * k, 7 * k); ctx.lineTo(0, 3.5 * k); ctx.lineTo(-7 * k, 7 * k); ctx.closePath();
         ctx.fill(); ctx.strokeStyle = "#000"; ctx.lineWidth = 1.5 * dpr; ctx.stroke(); ctx.restore();
+        meArrow = { x: sx, y: sy, r: 11 * k }; // nhãn của con khác không được đè lên mũi tên
         continue; // chỉ mũi tên, không nhãn ("Bạn" / loài / %)
       }
       ctx.beginPath(); ctx.arc(sx, sy, rr, 0, Math.PI * 2); ctx.fill();
@@ -844,6 +913,7 @@ function render() {
 // nhãn luôn hiện cạnh chấm: dòng 1 = tên người chơi (hoặc "Bạn" / loài), dòng 2 = loài · % trưởng thành · giới tính
 // Bạn và mục tiêu ghim được xếp chỗ trước; nhãn đè lên nhãn đã xếp thì dịch xuống/lên, có đường nối về chấm.
 const labelSlot = new Map(); // mã đối tượng -> chỗ đặt nhãn ở khung trước
+let meArrow = null;          // vị trí mũi tên của bạn trên màn hình (vật cản khi đặt nhãn)
 const textWCache = new Map();
 function textW(font, s) {
   const k = font + "|" + s;
@@ -878,6 +948,7 @@ function placeLabels(labels, dpr, mp) {
   labels.sort((p, q) => p.pri - q.pri);
   // vật cản: mọi chấm (để nhãn không che marker của con khác) + các nhãn đã đặt
   const placed = labels.map(L => ({ x: L.sx - L.rr - 2 * dpr, y: L.sy - L.rr - 2 * dpr, w: 2 * L.rr + 4 * dpr, h: 2 * L.rr + 4 * dpr }));
+  if (meArrow) placed.push({ x: meArrow.x - meArrow.r, y: meArrow.y - meArrow.r, w: 2 * meArrow.r, h: 2 * meArrow.r });
   const hits = (x, y, w, h) => placed.some(b => x < b.x + b.w && b.x < x + w && y < b.y + b.h && b.y < y + h);
   const W = cv.width, H = cv.height, inView = (x, y, w, h) => x >= 0 && y >= 0 && x + w <= W && y + h <= H;
   for (const L of labels) {
@@ -905,9 +976,13 @@ function placeLabels(labels, dpr, mp) {
       ctx.beginPath(); ctx.moveTo(sx + ux * L.rr, sy + uy * L.rr); ctx.lineTo(nx, ny); ctx.stroke();
       ctx.strokeStyle = L.col; ctx.lineWidth = 1.5 * dpr; ctx.stroke();
     }
-    ctx.fillStyle = "rgba(0,0,0,0.7)"; ctx.fillRect(x, y + 1 * dpr, 5 * dpr, h - 2 * dpr);
-    ctx.fillStyle = L.col; ctx.fillRect(x + 1 * dpr, y + 2 * dpr, 3 * dpr, h - 4 * dpr);
-    const tx = x + 7 * dpr;
+    // vạch màu luôn ở phía GẦN chấm: nhãn nằm bên trái chấm -> vạch ở mép phải, chữ căn phải
+    const onLeft = x + w <= sx + 1;
+    const bx = onLeft ? x + w - 5 * dpr : x;
+    ctx.fillStyle = "rgba(0,0,0,0.7)"; ctx.fillRect(bx, y + 1 * dpr, 5 * dpr, h - 2 * dpr);
+    ctx.fillStyle = L.col; ctx.fillRect(bx + 1 * dpr, y + 2 * dpr, 3 * dpr, h - 4 * dpr);
+    const tx = onLeft ? x + w - 7 * dpr : x + 7 * dpr;
+    ctx.textAlign = onLeft ? "right" : "left";
     ctx.strokeStyle = "rgba(0,0,0,0.85)"; ctx.lineWidth = 3 * dpr;
     ctx.font = F1; ctx.fillStyle = L.c === "me" ? "#ffd34d" : "#fff";
     ctx.strokeText(L.l1, tx, y + 11 * dpr); ctx.fillText(L.l1, tx, y + 11 * dpr);

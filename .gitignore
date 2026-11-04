@@ -9,3 +9,4 @@ settings.txt
 version.txt
 
 version_yesterday/
+perf_log*.txt

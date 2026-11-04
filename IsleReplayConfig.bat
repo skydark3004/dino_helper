@@ -1,5 +1,6 @@
 <# : phan batch - goi PowerShell chay phan con lai cua chinh file nay
 @echo off
+set "DINO_DIR=%~dp0"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "iex ((Get-Content -LiteralPath '%~f0' -Raw -Encoding UTF8))" & exit /b
 #>
 
@@ -10,6 +11,27 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "iex ((Get-Content -Liter
 $Ini      = "$env:LOCALAPPDATA\TheIsle\Saved\Config\WindowsClient\Engine.ini"
 $AppId    = 376210
 $GameExes = 'TheIsleClient-Win64-Shipping', 'TheIsle'
+# cài đặt của Dino Replay Reader (cùng thư mục với file .bat này và DinoReplayReader.exe)
+$Settings = Join-Path $env:DINO_DIR 'settings.txt'
+
+function Get-PerfLog {
+    if (Test-Path $Settings) { foreach ($l in Get-Content $Settings) { if ($l -match '^\s*perflog\s*=\s*1\s*$') { return $true } } }
+    return $false
+}
+
+function Set-PerfLog([bool]$On) {
+    # giữ nguyên các dòng cài đặt khác của tool (vd autoupdatecheck=...)
+    $lines = @()
+    if (Test-Path $Settings) { $lines = @(Get-Content $Settings | Where-Object { $_ -notmatch '^\s*perflog\s*=' }) }
+    $lines += 'perflog=' + $(if ($On) { '1' } else { '0' })
+    Set-Content $Settings $lines -Encoding ascii
+    if ($On) {
+        Write-Host "`nĐã BẬT ghi log chỗ chậm -> perf_log.txt (cạnh DinoReplayReader.exe)." -ForegroundColor Green
+        Write-Host "Tool đang chạy cũng tự áp dụng sau ~1 giây. Gửi file perf_log.txt cho người hỗ trợ khi bị giật."
+    } else {
+        Write-Host "`nĐã TẮT ghi log chỗ chậm." -ForegroundColor Green
+    }
+}
 
 function Show-Current {
     Write-Host "`n--- Engine.ini hiện tại ---" -ForegroundColor Cyan
@@ -19,6 +41,7 @@ function Show-Current {
     } else {
         Write-Host "  Chưa có file (game sẽ tự tạo khi mở)."
     }
+    Write-Host ("`n--- Ghi log chỗ chậm (Dino Replay Reader): {0} ---" -f $(if (Get-PerfLog) { 'BẬT' } else { 'TẮT' })) -ForegroundColor Cyan
 }
 
 function Apply-Profile([string[]]$CVars, [bool]$Lock) {
@@ -62,11 +85,13 @@ while ($true) {
     Write-Host "  2. Nhanh     - ghi chunk 0.125s, nạp chunk 0.1s, file tên fastN, giữ 100 replay"
     Write-Host "  3. Tùy chỉnh - tự nhập thông số (giữ 100 replay)"
     Write-Host "  4. Xem cấu hình hiện tại"
+    Write-Host ("  5. Bật/tắt ghi log chỗ chậm (perf_log.txt) - hiện: {0}" -f $(if (Get-PerfLog) { 'BẬT' } else { 'TẮT' }))
     Write-Host "  0. Thoát"
     $choice = Read-Host "Chọn"
 
     $ok = $null
     switch ($choice) {
+        '5' { Set-PerfLog (-not (Get-PerfLog)) } # không cần tắt game, không hỏi mở game
         '1' { $ok = Apply-Profile @() $false }
         '2' {
             $ok = Apply-Profile @(
@@ -77,7 +102,7 @@ while ($true) {
             ) $true
         }
         '3' {
-            $chunk  = Read-Number 'Bao lâu ghi một chunk xuống file (giây)' '1'
+            $chunk  = Read-Number 'Bao lâu ghi một chunk xuống file (giây; bản đồ trực tiếp cập nhật theo nhịp này)' '0.125'
             $load   = Read-Number 'Khoảng cách nạp chunk khi xem lại (giây)' '0.1'
             $prefix = Read-Host 'Tiền tố tên file [Enter = custom]'
             if ([string]::IsNullOrWhiteSpace($prefix)) { $prefix = 'custom' }

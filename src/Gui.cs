@@ -53,7 +53,8 @@ class MainForm : Form
     CheckBox chkAlert, chkAlertSound;
     readonly Dictionary<string, DateTime> alertPresent = new Dictionary<string, DateTime>(); // SteamId -> lần cuối có mặt (chỉ luồng theo dõi dùng)
     // tự cập nhật: file replay đang theo dõi + trạng thái lần trích xuất gần nhất
-    CheckBox chkLive; Label lblLive; System.Windows.Forms.Timer liveTimer;
+    CheckBox chkLive; Label lblLive; System.Windows.Forms.Timer liveTimer, liveFastTimer;
+    DateTime perfShownAt = DateTime.MinValue; int perfHidden; // giới hạn dòng [chậm] trong ô log
     string watchFile; DateTime watchTime; long watchLen; volatile bool runBusy, liveBusy; // trích xuất thủ công và tự theo dõi chạy độc lập
     bool liveRunning; // replay đang theo dõi còn đang được game quay (chưa dừng)
     // bộ đọc giữ trong bộ nhớ -> mỗi lần chỉ đọc phần game vừa ghi thêm
@@ -147,8 +148,30 @@ class MainForm : Form
         ovTimer.Start();
         // mỗi giây: tìm replay đang quay (dự phòng cho sự kiện thay đổi file của Windows) + cập nhật nếu có dữ liệu mới
         liveTimer = new System.Windows.Forms.Timer { Interval = 1000 };
-        liveTimer.Tick += (s, e) => { LiveScan(); LiveTick(); };
+        // (lần đầu đọc cài đặt log ở tick đầu tiên, sau khi ô log đã được tạo)
+        liveTimer.Tick += (s, e) => { LiveScan(); LiveTick(); RefreshPerfSetting(); PerfLog.Flush(); };
         liveTimer.Start();
+        // Không chỉ dựa vào FileSystemWatcher (có máy không báo / báo chậm -> bản đồ chỉ cập nhật mỗi 1 s theo liveTimer):
+        // khi đang theo dõi, cứ 100 ms hỏi kích thước file qua handle đang giữ (rất rẻ), có dữ liệu mới thì đọc ngay.
+        // chỗ chậm (tool, game, trang bản đồ/radar) -> perf_log.txt; ô log chỉ hiện tối đa 1 dòng / 20 s (đủ để biết, chi tiết xem file)
+        PerfLog.Logged += line =>
+        {
+            if (line.Contains("nhân CPU") || line.Contains("đọc lần đầu") || line.Contains("[game] ghi replay mỗi") || line.Contains("mở trang · GPU")) return;
+            try
+            {
+                BeginInvoke((Action)(() =>
+                {
+                    if ((DateTime.Now - perfShownAt).TotalSeconds < 20) { perfHidden++; return; }
+                    perfShownAt = DateTime.Now;
+                    log.AppendText("[chậm] " + line.Substring(11) + (perfHidden > 0 ? string.Format("  (+{0} dòng khác trong perf_log.txt)", perfHidden) : "") + "\r\n");
+                    perfHidden = 0;
+                }));
+            }
+            catch { }
+        };
+        liveFastTimer = new System.Windows.Forms.Timer { Interval = 100 };
+        liveFastTimer.Tick += (s, e) => { if (watchFile != null) LiveTick(); };
+        liveFastTimer.Start();
         root.Controls.Add(row2);
 
         // tab 2: cắt 1 đoạn replay thành file mới (để xem lại trong game)
@@ -521,12 +544,95 @@ class MainForm : Form
         watchFile = f;
         watchTime = DateTime.MinValue; watchLen = -1;      // buộc cập nhật ngay lần đầu
         DropLiveReader(); liveRpLen = 0;                   // lần đầu đọc cả file, sau đó chỉ đọc phần mới
+        dataTimes.Clear(); lastDataMax = -1;
+        PerfHeader("bắt đầu theo dõi " + Path.GetFileName(f));
         lastFullReport = DateTime.MinValue;
         liveRunning = true;
         if (server != null) server.SetLive(Path.GetFileName(Program.DefaultOutDir(f)));
         lblLive.ForeColor = Color.Firebrick;
         LoadList();
         LiveTick();
+    }
+
+    // ---------- bật/tắt ghi log chỗ chậm (IsleReplayConfig.bat mục 5 -> settings.txt: perflog=1) ----------
+    DateTime perfSettingTime = DateTime.MinValue;
+    void RefreshPerfSetting()
+    {
+        DateTime wt;
+        try { wt = File.Exists(SettingsFile) ? File.GetLastWriteTimeUtc(SettingsFile) : DateTime.MinValue; } catch { return; }
+        if (wt == perfSettingTime || log == null) return; // chỉ đọc lại khi file đổi
+        perfSettingTime = wt;
+        bool on = LoadSetting("perflog", "0") == "1";
+        if (on == PerfLog.Enabled) return;
+        PerfLog.SetEnabled(on);
+        log.AppendText(on
+            ? string.Format("[{0:HH:mm:ss}] Ghi log chỗ chậm: BẬT → {1} (tắt bằng IsleReplayConfig.bat, mục 5)\r\n", DateTime.Now, PerfLog.FilePath)
+            : string.Format("[{0:HH:mm:ss}] Ghi log chỗ chậm: TẮT\r\n", DateTime.Now));
+        if (on) PerfHeader(watchFile != null ? "đang theo dõi " + Path.GetFileName(watchFile) : "bật ghi log (chưa có replay đang quay)");
+    }
+    // dòng thông tin máy ở đầu mỗi lần theo dõi: giúp đọc log của người khác
+    void PerfHeader(string what)
+    {
+        double cs;
+        PerfLog.Write(null, string.Format("[tool] {0} · bản {1} · Engine.ini ChunkUploadDelayInSeconds = {2} · {3} nhân CPU · {4}",
+            what, Updater.CurrentVersion() ?? "tự build", ReplayChunkSetting(out cs), Environment.ProcessorCount, Environment.OSVersion.VersionString));
+    }
+
+    // ---------- nhịp game ghi replay ----------
+    // Bản đồ chỉ cập nhật nhanh bằng nhịp game ghi dữ liệu ra file (localReplay.ChunkUploadDelayInSeconds trong Engine.ini).
+    // Máy chưa chỉnh (hoặc chỉnh 1 s) -> dữ liệu đến mỗi 1–2 s: đo nhịp thật và báo cách sửa (1 lần mỗi lần mở tool).
+    readonly List<DateTime> dataTimes = new List<DateTime>(); double lastDataMax = -1; bool slowWarned;
+    // trả về khoảng cách trung vị (giây) giữa các lần có dữ liệu mới, -1 nếu chưa đủ mẫu
+    double TrackWriteInterval(double maxTime)
+    {
+        if (maxTime > lastDataMax)
+        {
+            if (lastDataMax >= 0)
+            {
+                // game lâu không ghi dữ liệu mới (game lag / đang loading / ổ đĩa chậm)
+                if (dataTimes.Count > 0)
+                {
+                    double gap = (DateTime.Now - dataTimes[dataTimes.Count - 1]).TotalSeconds;
+                    if (gap > 3) PerfLog.Write("game-gap", string.Format("[game] {0:0.0} s không có dữ liệu replay mới (game lag / loading / ổ đĩa chậm?)", gap), gap);
+                }
+                dataTimes.Add(DateTime.Now); if (dataTimes.Count > 21) dataTimes.RemoveAt(0);
+            }
+            lastDataMax = maxTime;
+        }
+        if (dataTimes.Count < 11) return -1;
+        var gaps = new List<double>();
+        for (int i = 1; i < dataTimes.Count; i++) gaps.Add((dataTimes[i] - dataTimes[i - 1]).TotalSeconds);
+        gaps.Sort();
+        double med = gaps[gaps.Count / 2];
+        if (med > 0.6 && !slowWarned)
+        {
+            slowWarned = true;
+            double setVal;
+            string cur = ReplayChunkSetting(out setVal);
+            string fix = setVal > 0 && setVal <= 0.25
+                // đã đặt nhanh mà game vẫn ghi thưa: game chưa đọc lại cấu hình (đang mở từ trước) hoặc máy/ổ đĩa quá tải
+                ? "Engine.ini đã đặt nhanh nhưng game chưa áp dụng: tắt hẳn game rồi mở lại (nếu vẫn vậy: máy/ổ đĩa đang quá tải)."
+                : "Muốn cập nhật ~0,15 s: tắt game, chạy IsleReplayConfig.bat, chọn 2 (Nhanh), rồi mở lại game.";
+            log.AppendText(string.Format("[{0:HH:mm:ss}] ⚠ Game đang ghi replay mỗi ~{1:0.0} s (Engine.ini: ChunkUploadDelayInSeconds = {2}) → bản đồ/radar chỉ có dữ liệu mới theo nhịp này (vẫn chạy mượt nhưng trễ hơn). {3}\r\n",
+                DateTime.Now, med, cur, fix));
+            PerfLog.Write(null, string.Format("[game] ghi replay mỗi ~{0:0.00} s (Engine.ini: {1}) – {2}", med, cur, fix));
+        }
+        return med;
+    }
+    // giá trị localReplay.ChunkUploadDelayInSeconds trong Engine.ini của game (val = -1 nếu chưa đặt / không đọc được)
+    static string ReplayChunkSetting(out double val)
+    {
+        val = -1;
+        try
+        {
+            string ini = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"TheIsle\Saved\Config\WindowsClient\Engine.ini");
+            if (!File.Exists(ini)) return "chưa có Engine.ini";
+            var m = System.Text.RegularExpressions.Regex.Match(File.ReadAllText(ini), @"localReplay\.ChunkUploadDelayInSeconds\s*=\s*([0-9.]+)");
+            if (!m.Success) return "chưa đặt (mặc định của game)";
+            double.TryParse(m.Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out val);
+            return m.Groups[1].Value + " s";
+        }
+        catch { return "không đọc được"; }
     }
 
     // Bỏ bộ đọc trực tiếp hiện tại và đóng file nó đang giữ mở. Luồng đọc đang chạy thì nó tự đóng khi xong (LiveTick).
@@ -816,49 +922,69 @@ class MainForm : Form
             LoadList(); LiveScan();
             return;
         }
-        if (fi.LastWriteTime == watchTime && fi.Length == watchLen) return;
+        // kích thước thật qua file đang giữ mở (thông tin thư mục có thể chậm cập nhật khi game đang ghi)
+        long held = liveRp != null ? liveRp.HeldLength() : -1;
+        long curLen = Math.Max(fi.Length, held);
+        if (fi.LastWriteTime == watchTime && curLen == watchLen) return;
         // nghỉ ít nhất bằng thời gian lần xử lý trước -> không chiếm quá ~50% một nhân CPU khi đang chơi
         if (DateTime.Now < nextLiveAllowed) return;
         liveBusy = true;
         string f = watchFile; bool full = chkFull.Checked, alertOn = chkAlert.Checked;
         // ghi nhận trạng thái file TRƯỚC khi đọc: nếu game ghi thêm trong lúc xử lý thì lần sau vẫn bắt được
-        DateTime seenTime = fi.LastWriteTime; long seenLen = fi.Length;
+        DateTime seenTime = fi.LastWriteTime; long seenLen = curLen;
         var rp = liveRp;
         new Thread(() =>
         {
             string msg; bool stillLive = true; double len = 0; List<DinoAlert> alerts = null;
             var sw = Stopwatch.StartNew();
+            // thời gian từng bước (ms) -> ghi perf_log.txt khi một lần cập nhật chậm
+            double tLoad = 0, tParse = 0, tAlert = 0, tMap = 0, tPush = 0; bool fresh = false, report = false; long bytesNew = 0;
             try
             {
                 // file bị ghi lại từ đầu (ngắn đi) hoặc lần đầu -> bộ đọc mới
-                if (rp == null || seenLen < liveRpLen) { if (rp != null) rp.CloseFile(); rp = Program.NewReplay(f, full, TextWriter.Null); }
+                if (rp == null || seenLen < liveRpLen) { if (rp != null) rp.CloseFile(); rp = Program.NewReplay(f, full, TextWriter.Null); fresh = true; }
+                bytesNew = seenLen - (fresh ? 0 : liveRpLen);
+                double m0 = sw.Elapsed.TotalMilliseconds;
                 rp.LoadFile(f);
+                double m1 = sw.Elapsed.TotalMilliseconds; tLoad = m1 - m0;
                 rp.ParseMore();
+                double m2 = sw.Elapsed.TotalMilliseconds; tParse = m2 - m1;
                 liveRpLen = seenLen;
                 stillLive = rp.IsLive; len = rp.LengthSec;
                 // chỉ báo khi game còn đang quay (dữ liệu là "bây giờ")
                 if (alertOn && stillLive) alerts = rp.CheckNewDinos(alertPresent, DateTime.Now, TimeSpan.FromSeconds(30));
+                double m3 = sw.Elapsed.TotalMilliseconds; tAlert = m3 - m2;
                 // bản đồ: mỗi lần; báo cáo + csv: mỗi 15 giây và khi dừng quay
-                if (!stillLive || (DateTime.Now - lastFullReport).TotalSeconds >= 15) { rp.Finish(); lastFullReport = DateTime.Now; }
+                if (!stillLive || (DateTime.Now - lastFullReport).TotalSeconds >= 15) { rp.Finish(); lastFullReport = DateTime.Now; report = true; }
                 else
                 {
                     bool writeFiles = server == null || (DateTime.Now - lastFileWrite).TotalSeconds >= 2;
                     rp.WriteLiveMap(writeFiles);
                     if (writeFiles) lastFileWrite = DateTime.Now;
                 }
+                double m4 = sw.Elapsed.TotalMilliseconds; tMap = m4 - m3;
                 if (server != null && rp.LastMapJson != null) server.Push(Path.GetFileName(rp.OutDir), rp.LastMapJson);
+                tPush = sw.Elapsed.TotalMilliseconds - m4;
                 msg = null;
             }
             catch (Exception e) { msg = "lỗi: " + e.Message; if (rp != null) rp.CloseFile(); rp = null; }
             double took = sw.Elapsed.TotalSeconds;
+            if (fresh)
+                PerfLog.Write(null, string.Format("[tool] đọc lần đầu {0}: {1:0.0} MB trong {2:0} ms", Path.GetFileName(f), seenLen / 1048576.0, took * 1000));
+            else if (took * 1000 > 150 || (report && took * 1000 > 400))
+                PerfLog.Write("tool-slow", string.Format("[tool] cập nhật chậm {0:0} ms (đọc file {1:0} · giải mã {2:0} [{3} KB mới] · báo khủng long {4:0} · {5} {6:0} · gửi trang {7:0}) – {8}",
+                    took * 1000, tLoad, tParse, bytesNew / 1024, tAlert, report ? "báo cáo đầy đủ" : "dữ liệu bản đồ", tMap, tPush,
+                    tLoad > 50 ? "đọc file chậm (ổ đĩa / phần mềm diệt virus?)" : tPush > 50 ? "gửi tới trang chậm (trình duyệt bận?)" : tParse > 80 ? "nhiều dữ liệu mới một lúc" : "máy đang bận (CPU)"), took * 1000);
             BeginInvoke((Action)(() =>
             {
                 if (watchFile == f) { liveRp = rp; watchTime = seenTime; watchLen = seenLen; liveRunning = stillLive; }
                 else if (rp != null) rp.CloseFile(); // đã chuyển file / ngừng theo dõi trong lúc đọc -> bỏ bộ đọc này
                 if (msg != null) log.AppendText(string.Format("[{0:HH:mm:ss}] {1}: {2}\r\n", DateTime.Now, Path.GetFileName(f), msg));
                 if (alerts != null && alerts.Count > 0 && chkAlert.Checked) ShowAlerts(alerts);
-                lblLive.Text = string.Format("{0} {1} · {2} · cập nhật {3:HH:mm:ss} ({4:0} ms)",
-                    stillLive ? "● Đang quay" : "■ Đã dừng", Path.GetFileName(f), TimeSpan.FromSeconds(len).ToString(@"m\:ss"), DateTime.Now, took * 1000);
+                double every = watchFile == f && rp != null && stillLive ? TrackWriteInterval(rp.MaxTime) : -1;
+                lblLive.Text = string.Format("{0} {1} · {2} · cập nhật {3:HH:mm:ss} ({4:0} ms){5}",
+                    stillLive ? "● Đang quay" : "■ Đã dừng", Path.GetFileName(f), TimeSpan.FromSeconds(len).ToString(@"m\:ss"), DateTime.Now, took * 1000,
+                    every > 0 ? string.Format(" · game ghi mỗi {0:0.00} s", every) : "");
                 nextLiveAllowed = DateTime.Now.AddSeconds(took);
                 liveBusy = false;
                 // game có thể đã ghi thêm trong lúc đang xử lý -> kiểm tra lại ngay

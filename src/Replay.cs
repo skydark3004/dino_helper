@@ -30,6 +30,10 @@ partial class Replay
     // Replay đang quay: GIỮ file mở giữa các lần đọc. Mở lại file vừa được game ghi làm Windows Defender quét lại
     // (~15 ms mỗi lần, ~7 lần/giây). Đóng khi game quay xong (bIsLive = 0), khi đổi file, hoặc CloseFile().
     FileStream liveFs; string liveFsPath;
+    // kích thước thật của file đang giữ mở (-1 nếu không giữ). Hỏi qua handle: rẻ, không mở lại file (Defender không quét),
+    // và đúng ngay cả khi thông tin thư mục chưa cập nhật / FileSystemWatcher không báo.
+    public long HeldLength() { try { return liveFs != null ? liveFs.Length : -1; } catch { return -1; } }
+
     public void CloseFile()
     {
         if (liveFs != null) { try { liveFs.Dispose(); } catch { } }

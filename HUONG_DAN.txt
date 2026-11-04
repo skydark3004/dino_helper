@@ -5,8 +5,10 @@ DINO HELPER - HƯỚNG DẪN NHANH
 2. Chạy DinoReplayReader.exe.
    Windows có thể cảnh báo "Windows protected your PC" (exe không có chữ ký số):
    bấm "More info" -> "Run anyway".
-3. Trong game, bật quay replay (phím F2). Chạy IsleReplayConfig.bat một lần nếu muốn
-   bản đồ cập nhật nhanh (khoảng 1 giây) khi đang quay.
+3. QUAN TRỌNG - chạy IsleReplayConfig.bat một lần (lúc game đang TẮT), chọn 2 (Nhanh).
+   Nếu không, game chỉ ghi replay mỗi 1 giây trở lên -> bản đồ/radar cập nhật chậm, trễ.
+   Tool sẽ báo trong ô log nếu thấy game ghi thưa ("Game đang ghi replay mỗi ~X s").
+   Sau đó trong game bật quay replay (phím F2).
 4. Tool tự thấy replay đang quay:
    - Tab "Bản đồ & overlay": "Mở overlay radar" (ô radar nổi trên game, game phải chạy
      Borderless/Windowed; Ctrl+F9 = khoá/mở khoá để kéo, đổi cỡ, lăn chuột đổi bán kính)
@@ -16,6 +18,12 @@ DINO HELPER - HƯỚNG DẪN NHANH
    Tab "Cắt replay": cắt 1 đoạn replay để xem lại trong game.
    Tab "Cập nhật": tự kiểm tra bản mới khi mở tool; bấm "Cập nhật ngay" để tải và cài
    (tool tự mở lại, giữ nguyên cài đặt và các chỗ sỏi đã ghi).
+
+Bị giật / bản đồ cập nhật chậm?
+- Chạy IsleReplayConfig.bat, chọn 5 để BẬT ghi log chỗ chậm (mặc định tắt; không cần tắt game, tool đang mở
+  tự áp dụng sau ~1 giây). Tool ghi vào perf_log.txt (cạnh DinoReplayReader.exe): tool đọc file chậm, game lâu
+  không ghi replay, radar/bản đồ bị treo, mất kết nối... Vài dòng cũng hiện trong ô log của tool ([chậm]).
+  Chơi lúc bị giật một lúc rồi gửi file perf_log.txt cho người hỗ trợ. Xong thì chọn 5 lần nữa để TẮT.
 
 Lưu ý:
 - Replay chỉ có những gì ở gần bạn: khủng long ra xa ~300-500 m (tuỳ loài) sẽ mất khỏi bản đồ

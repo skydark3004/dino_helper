@@ -19,6 +19,7 @@ class LiveServer
     readonly Dictionary<string, string> latest = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
     class SseClient { public string Name; public TcpClient Tcp; public NetworkStream Stream; }
+    DateTime lastPageLog = DateTime.MinValue;
 
     public LiveServer(string rootDir) { root = Path.GetFullPath(rootDir).TrimEnd('\\') + "\\"; }
 
@@ -67,8 +68,29 @@ class LiveServer
         try
         {
             s = c.GetStream();
-            string path = ReadRequestPath(s);
-            if (path == null) { c.Close(); return; }
+            string target = ReadRequestPath(s);
+            if (target == null) { c.Close(); return; }
+            string path = target, query = "";
+            int q = target.IndexOf('?'); if (q >= 0) { path = target.Substring(0, q); query = target.Substring(q + 1); }
+
+            // /log?m=<nội dung>: trang bản đồ/radar báo chỗ chậm -> perf_log.txt
+            if (path == "/log")
+            {
+                // chặn thêm phía máy chủ: tối đa 2 lần gửi / giây (trang đã tự gộp, đây chỉ là phòng khi có lỗi)
+                bool drop;
+                lock (lk) { drop = (DateTime.Now - lastPageLog).TotalMilliseconds < 500; if (!drop) lastPageLog = DateTime.Now; }
+                if (drop) query = "";
+                foreach (var kv in query.Split('&'))
+                    if (kv.StartsWith("m="))
+                    {
+                        string m = Uri.UnescapeDataString(kv.Substring(2).Replace('+', ' '));
+                        if (m.Length > 2000) m = m.Substring(0, 2000);
+                        PerfLog.Write(null, "[trang] " + m);
+                    }
+                WriteAscii(s, "HTTP/1.1 204 No Content\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n");
+                try { c.Close(); } catch { }
+                return;
+            }
 
             if (path.StartsWith("/events/"))
             {
@@ -106,9 +128,7 @@ class LiveServer
         string first = Encoding.ASCII.GetString(buf, 0, n).Split('\n')[0].Trim();
         var parts = first.Split(' ');
         if (parts.Length < 2 || parts[0] != "GET") return null;
-        string p = parts[1];
-        int q = p.IndexOf('?'); if (q >= 0) p = p.Substring(0, q);
-        return p;
+        return parts[1]; // gồm cả phần ?query (Handle tách ra)
     }
 
     void ServeFile(NetworkStream s, string urlPath)
