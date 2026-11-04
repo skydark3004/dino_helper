@@ -1,0 +1,22 @@
+DINO HELPER - HƯỚNG DẪN NHANH
+==============================
+
+1. Giải nén CẢ thư mục DinoHelper (exe cần map_template.html và thư mục maps\ nằm cạnh).
+2. Chạy DinoReplayReader.exe.
+   Windows có thể cảnh báo "Windows protected your PC" (exe không có chữ ký số):
+   bấm "More info" -> "Run anyway".
+3. Trong game, bật quay replay (phím F2). Chạy IsleReplayConfig.bat một lần nếu muốn
+   bản đồ cập nhật nhanh (khoảng 1 giây) khi đang quay.
+4. Tool tự thấy replay đang quay:
+   - Tab "Bản đồ & overlay": "Mở overlay radar" (ô radar nổi trên game, game phải chạy
+     Borderless/Windowed; Ctrl+F9 = khoá/mở khoá để kéo, đổi cỡ, lăn chuột đổi bán kính)
+     hoặc "Mở bản đồ trên web". Bật/tắt từng lớp: người chơi, địa danh, sỏi, bùn...
+   - Báo ở góc màn hình khi có khủng long người chơi mới vào vùng.
+5. Tab "Đọc replay & bản đồ": trích xuất replay cũ -> báo cáo + bản đồ.
+   Tab "Cắt replay": cắt 1 đoạn replay để xem lại trong game.
+
+Lưu ý:
+- Replay chỉ có những gì ở gần bạn: khủng long ra xa ~300-500 m (tuỳ loài) sẽ mất khỏi bản đồ
+  (bản đồ giữ "mất dấu" - vị trí cuối cùng - trong 5 phút).
+- Chỗ có sỏi được tự ghi mỗi khi bạn (hoặc khủng long khác gần bạn) nhặt sỏi, lưu ở gastro_learned.txt.
+- Bản mới nhất luôn ở: https://github.com/skydark3004/dino_helper/releases/latest/download/DinoHelper.zip
