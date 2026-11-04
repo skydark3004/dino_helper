@@ -1,0 +1,194 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading;
+
+// Máy chủ web nhỏ chỉ trong máy (127.0.0.1):
+//  - phục vụ file trong thư mục tool (output\..., maps\...) để mở bản đồ qua http://
+//  - /events/<tên thư mục kết quả>: kênh "server-sent events" -> tool đẩy dữ liệu mới vào bản đồ ngay lập tức
+class LiveServer
+{
+    readonly string root;
+    TcpListener listener;
+    public int Port;
+    readonly object lk = new object();
+    readonly List<SseClient> clients = new List<SseClient>();
+    readonly Dictionary<string, string> latest = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+    class SseClient { public string Name; public TcpClient Tcp; public NetworkStream Stream; }
+
+    public LiveServer(string rootDir) { root = Path.GetFullPath(rootDir).TrimEnd('\\') + "\\"; }
+
+    public bool Start()
+    {
+        for (int port = 47321; port < 47341; port++)
+        {
+            try { listener = new TcpListener(IPAddress.Loopback, port); listener.Start(); Port = port; break; }
+            catch (SocketException) { listener = null; }
+        }
+        if (listener == null) return false;
+        new Thread(AcceptLoop) { IsBackground = true, Name = "LiveServer" }.Start();
+        return true;
+    }
+
+    public string MapUrl(string outDir)
+    {
+        return string.Format("http://127.0.0.1:{0}/output/{1}/map.html", Port, Uri.EscapeDataString(Path.GetFileName(outDir.TrimEnd('\\'))));
+    }
+
+    // "/live/...": luôn trỏ tới kết quả của replay đang quay (tool đổi khi chuyển sang file mới)
+    public string LiveUrl { get { return string.Format("http://127.0.0.1:{0}/live/map.html", Port); } }
+    volatile string liveName;
+    public void SetLive(string outName)
+    {
+        liveName = outName;
+        string last;
+        lock (lk) latest.TryGetValue(outName, out last);
+        if (last != null) Push(outName, last); // trang /live đang mở chuyển sang ngay
+    }
+
+    void AcceptLoop()
+    {
+        while (true)
+        {
+            TcpClient c;
+            try { c = listener.AcceptTcpClient(); } catch { return; }
+            c.NoDelay = true; // gửi ngay, không gom gói (giảm trễ)
+            ThreadPool.QueueUserWorkItem(_ => Handle(c));
+        }
+    }
+
+    void Handle(TcpClient c)
+    {
+        NetworkStream s = null;
+        try
+        {
+            s = c.GetStream();
+            string path = ReadRequestPath(s);
+            if (path == null) { c.Close(); return; }
+
+            if (path.StartsWith("/events/"))
+            {
+                string name = Uri.UnescapeDataString(path.Substring(8));
+                WriteAscii(s, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-store\r\nConnection: keep-alive\r\n\r\n");
+                var cl = new SseClient { Name = name, Tcp = c, Stream = s };
+                string last;
+                lock (lk)
+                {
+                    clients.Add(cl);
+                    latest.TryGetValue(name, out last);
+                }
+                if (last != null) Send(cl, last);
+                string ly = layersJson;
+                if (ly != null) SendRaw(cl, "event: layers\ndata: " + ly + "\n\n");
+                return; // giữ kết nối mở để đẩy dữ liệu sau
+            }
+
+            ServeFile(s, path);
+        }
+        catch { }
+        try { c.Close(); } catch { }
+    }
+
+    static string ReadRequestPath(NetworkStream s)
+    {
+        var buf = new byte[8192]; int n = 0;
+        while (n < buf.Length)
+        {
+            int r = s.Read(buf, n, buf.Length - n);
+            if (r <= 0) return null;
+            n += r;
+            if (Encoding.ASCII.GetString(buf, 0, n).Contains("\r\n\r\n")) break;
+        }
+        string first = Encoding.ASCII.GetString(buf, 0, n).Split('\n')[0].Trim();
+        var parts = first.Split(' ');
+        if (parts.Length < 2 || parts[0] != "GET") return null;
+        string p = parts[1];
+        int q = p.IndexOf('?'); if (q >= 0) p = p.Substring(0, q);
+        return p;
+    }
+
+    void ServeFile(NetworkStream s, string urlPath)
+    {
+        string rel = Uri.UnescapeDataString(urlPath).TrimStart('/').Replace('/', '\\');
+        if (rel.StartsWith("live\\", StringComparison.OrdinalIgnoreCase))
+        {
+            // /live/map.html = khuôn bản đồ; /live/data.js... = file của replay đang quay
+            string file = rel.Substring(5), ln = liveName;
+            if (file.Equals("map.html", StringComparison.OrdinalIgnoreCase)) rel = "map_template.html";
+            else if (ln != null) rel = "output\\" + ln + "\\" + file;
+            else if (file.EndsWith(".js", StringComparison.OrdinalIgnoreCase))
+            {
+                byte[] empty = Encoding.UTF8.GetBytes("window.REPLAY_DATA = null;\n");
+                WriteAscii(s, "HTTP/1.1 200 OK\r\nContent-Type: application/javascript; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: " + empty.Length + "\r\nConnection: close\r\n\r\n");
+                s.Write(empty, 0, empty.Length);
+                return;
+            }
+        }
+        string full;
+        try { full = Path.GetFullPath(Path.Combine(root, rel)); } catch { full = null; }
+        // chỉ phục vụ file nằm trong thư mục tool
+        if (full == null || !full.StartsWith(root, StringComparison.OrdinalIgnoreCase) || !File.Exists(full))
+        {
+            WriteAscii(s, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            return;
+        }
+        string ext = Path.GetExtension(full).ToLowerInvariant();
+        string type = ext == ".html" ? "text/html; charset=utf-8" : ext == ".js" ? "application/javascript; charset=utf-8"
+            : ext == ".webp" ? "image/webp" : ext == ".png" ? "image/png" : ext == ".jpg" || ext == ".jpeg" ? "image/jpeg"
+            : ext == ".csv" || ext == ".txt" ? "text/plain; charset=utf-8" : "application/octet-stream";
+        // ảnh bản đồ không đổi -> cho trình duyệt giữ lại; dữ liệu thì luôn lấy mới
+        string cache = ext == ".webp" || ext == ".png" || ext == ".jpg" ? "max-age=86400" : "no-store";
+        using (var fs = new FileStream(full, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        {
+            WriteAscii(s, string.Format("HTTP/1.1 200 OK\r\nContent-Type: {0}\r\nContent-Length: {1}\r\nCache-Control: {2}\r\nConnection: close\r\n\r\n", type, fs.Length, cache));
+            fs.CopyTo(s);
+        }
+    }
+
+    // Đẩy dữ liệu bản đồ mới (JSON 1 dòng) tới mọi trang đang mở kết quả `name`
+    public void Push(string name, string json)
+    {
+        List<SseClient> targets;
+        bool isLive = string.Equals(name, liveName, StringComparison.OrdinalIgnoreCase);
+        lock (lk)
+        {
+            latest[name] = json;
+            if (isLive) latest["live"] = json;
+            // trang mở theo tên thư mục + trang /live (nếu đây là replay đang quay)
+            targets = clients.FindAll(x => string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase) || (isLive && x.Name == "live"));
+        }
+        foreach (var cl in targets) Send(cl, json);
+    }
+
+    // Lớp bản đồ bật/tắt (do tool chọn): đẩy tới MỌI trang đang mở (bản đồ, /live, overlay) dưới dạng sự kiện "layers"
+    volatile string layersJson;
+    public void PushLayers(string json)
+    {
+        layersJson = json;
+        List<SseClient> targets;
+        lock (lk) targets = new List<SseClient>(clients);
+        foreach (var cl in targets) SendRaw(cl, "event: layers\ndata: " + json + "\n\n");
+    }
+
+    void Send(SseClient cl, string json) { SendRaw(cl, "data: " + json + "\n\n"); }
+
+    void SendRaw(SseClient cl, string text)
+    {
+        try
+        {
+            byte[] b = Encoding.UTF8.GetBytes(text);
+            lock (cl) cl.Stream.Write(b, 0, b.Length);
+        }
+        catch
+        {
+            lock (lk) clients.Remove(cl); // trang đã đóng
+            try { cl.Tcp.Close(); } catch { }
+        }
+    }
+
+    static void WriteAscii(Stream s, string text) { byte[] b = Encoding.UTF8.GetBytes(text); s.Write(b, 0, b.Length); }
+}

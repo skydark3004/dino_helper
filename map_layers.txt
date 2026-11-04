@@ -1,0 +1,10 @@
+player=1
+ghost=1
+corpse=0
+fish=0
+meat=1
+poi=1
+mud=0
+gastro=0
+pvngastro=0
+map=1

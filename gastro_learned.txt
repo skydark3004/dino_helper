@@ -1,0 +1,5 @@
+# Cho co soi (tu ghi khi thay animation nhat soi trong replay): x,y,z (cm, toa do game), luc ghi, loai khung long
+73216,390128,21135,2026-11-04 19:39,Tyrannosaurus
+41432,301329,20459,2026-11-04 19:50,Tyrannosaurus
+39884,301931,20573,2026-11-04 19:50,Tyrannosaurus
+36262,300548,20740,2026-11-04 19:50,Tyrannosaurus
