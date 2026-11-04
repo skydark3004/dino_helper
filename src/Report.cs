@@ -9,7 +9,29 @@ partial class Replay
 {
     public DateTime StartTime; public double LengthSec; public string MapName = "";
 
-    static string Species(Actor a)
+    // ---------- phân loại actor 1 lần (mỗi lần cập nhật trực tiếp không phải duyệt + so chuỗi cả ~4.000 actor) ----------
+    const int KindOther = 0, KindDino = 1, KindFish = 2, KindAnimal = 3, KindPickable = 4;
+    int classified;                                   // AllActors[0..classified) đã phân loại
+    readonly List<int> mapActorIdx = new List<int>(); // chỉ số các actor có thể hiện trên bản đồ (theo thứ tự AllActors)
+    readonly List<Actor> dinoActors = new List<Actor>(), playerStateActors = new List<Actor>();
+    void ClassifyNew()
+    {
+        for (; classified < AllActors.Count; classified++)
+        {
+            var a = AllActors[classified];
+            string c = a.Class ?? "";
+            a.SpeciesName = SpeciesOf(a);
+            // cùng thứ tự kiểm tra với Category()
+            a.Kind = a.SpeciesName != null ? KindDino : c.Contains("/AI/Characters/Fish/") ? KindFish
+                : c.Contains("/Characters/Animals/") ? KindAnimal : c.Contains("/PickablePieces/") ? KindPickable : KindOther;
+            if (a.Kind != KindOther) mapActorIdx.Add(classified);
+            if (a.Kind == KindDino) dinoActors.Add(a);
+            if (c.Contains("PlayerState")) playerStateActors.Add(a);
+        }
+    }
+
+    static string Species(Actor a) { return a.Kind >= 0 ? a.SpeciesName : SpeciesOf(a); }
+    static string SpeciesOf(Actor a)
     {
         if (a.Class == null || !a.Class.Contains("/Characters/Dinosaurs/")) return null;
         string s = ShortNameS(a.Class);
@@ -66,9 +88,10 @@ partial class Replay
 
     Dictionary<uint, Actor> PlayerStates()
     {
+        ClassifyNew();
         var psByGuid = new Dictionary<uint, Actor>();
-        foreach (var a in AllActors.Where(x => x.Class != null && x.Class.Contains("PlayerState") && x.Get("PlayerNamePrivate") != ""))
-            psByGuid[a.Guid] = a;
+        foreach (var a in playerStateActors)
+            if (a.Get("PlayerNamePrivate") != "") psByGuid[a.Guid] = a;
         return psByGuid;
     }
     // tên người chơi điều khiển một con khủng long (qua PlayerState)
@@ -82,7 +105,12 @@ partial class Replay
         };
     }
     // khủng long của bạn = con có Controller (chỉ gửi cho chính chủ)
-    Actor FindMe() { return AllActors.FirstOrDefault(d => Species(d) != null && d.Get("Controller") != ""); }
+    Actor FindMe()
+    {
+        ClassifyNew();
+        foreach (var d in dinoActors) if (d.Get("Controller") != "") return d; // khủng long đầu tiên (theo thứ tự AllActors)
+        return null;
+    }
 
     // Khi đang quay: chỉ ghi dữ liệu bản đồ (data.js + version.js), rất nhanh
     public void WriteLiveMap(bool writeFiles = true)

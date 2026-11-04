@@ -13,7 +13,11 @@ class Actor
     public Dictionary<string, string> First = new Dictionary<string, string>(), Last = new Dictionary<string, string>();
     public string LastPos; public double LastPosTime;
     // tăng mỗi khi có dữ liệu mới -> bản đồ chỉ dựng lại JSON của đối tượng đã thay đổi
-    public int Ver; public string JsonCache, JsonKey;
+    public int Ver; public string JsonCache;
+    // JSON trong JsonCache được dựng với các giá trị này (đổi bất kỳ cái nào -> dựng lại)
+    public int JsonVer = -1; public string JsonCat, JsonPlayer; public double JsonClose;
+    // phân loại theo class (tính 1 lần, class không đổi): Kind = -1 chưa phân loại; SpeciesName = loài nếu là khủng long
+    public int Kind = -1; public string SpeciesName;
     // phần đường đi đã dựng sẵn dạng JSON (chỉ nối thêm điểm mới)
     public StringBuilder TrackJson; public int TrackDone; public double[] TrackPrev; public string TrackCat;
     public List<double[]> Track = new List<double[]>(); // {time, x, y, z}

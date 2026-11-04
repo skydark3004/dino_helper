@@ -27,9 +27,38 @@ partial class Replay
 
     // Đọc lại file từ đĩa (chỉ đọc, cho phép game vẫn đang ghi) và cập nhật thông tin header.
     // Dùng được nhiều lần trên cùng một đối tượng: các frame đã xử lý không bị đọc lại.
+    // Replay đang quay: GIỮ file mở giữa các lần đọc. Mở lại file vừa được game ghi làm Windows Defender quét lại
+    // (~15 ms mỗi lần, ~7 lần/giây). Đóng khi game quay xong (bIsLive = 0), khi đổi file, hoặc CloseFile().
+    FileStream liveFs; string liveFsPath;
+    public void CloseFile()
+    {
+        if (liveFs != null) { try { liveFs.Dispose(); } catch { } }
+        liveFs = null; liveFsPath = null;
+    }
+
     public void LoadFile(string path)
     {
-        using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        if (liveFs != null && !string.Equals(liveFsPath, path, StringComparison.OrdinalIgnoreCase)) CloseFile();
+        if (liveFs != null)
+        {
+            // file ở đường dẫn này nhỏ hơn file đang giữ = file khác (bị xoá rồi tạo lại) -> mở lại
+            long held; try { held = liveFs.Length; } catch { held = -1; }
+            FileInfo fi = new FileInfo(path);
+            if (held < 0 || !fi.Exists || fi.Length < held) CloseFile();
+        }
+        if (liveFs == null)
+        {
+            // bufferSize 1 = không đệm: luôn đọc dữ liệu mới nhất game vừa ghi
+            liveFs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1);
+            liveFsPath = path;
+        }
+        try { ReadFileData(liveFs); }
+        catch { CloseFile(); throw; }
+        if (!IsLive) CloseFile(); // quay xong: file không đổi nữa, không giữ khoá
+    }
+
+    void ReadFileData(FileStream fs)
+    {
         {
             int len = (int)fs.Length;
             if (D == null || resumeChunk < 0 || len < DLen)

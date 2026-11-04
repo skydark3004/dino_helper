@@ -12,12 +12,15 @@ partial class Replay
     {
         // chỉ giữ các lớp cần thiết (bạn, người chơi khác, xác, cá, thịt) cho bản đồ nhẹ
         if (a == me) return "me";
-        string c = a.Class ?? "";
-        if (Species(a) != null) return a.Get("bIsDead") == "1" ? "corpse" : (a.Get("SteamId") != "" ? "player" : null);
-        if (c.Contains("/AI/Characters/Fish/")) return "fish";
-        // thú AI (hươu, lợn rừng, thỏ, gà, cua, dê...): /Game/TheIsle/Core/Characters/Animals/<Loài>/BP_<Loài>
-        if (c.Contains("/Characters/Animals/")) return a.Get("bIsDead") == "1" ? "corpse" : "animal";
-        if (c.Contains("/PickablePieces/")) return "meat";
+        // loại theo class đã tính sẵn (ClassifyNew): khủng long / cá / thú AI / thịt
+        switch (a.Kind)
+        {
+            case KindDino: return a.Get("bIsDead") == "1" ? "corpse" : (a.Get("SteamId") != "" ? "player" : null);
+            case KindFish: return "fish";
+            // thú AI (hươu, lợn rừng, thỏ, gà, cua, dê...): /Game/TheIsle/Core/Characters/Animals/<Loài>/BP_<Loài>
+            case KindAnimal: return a.Get("bIsDead") == "1" ? "corpse" : "animal";
+            case KindPickable: return "meat";
+        }
         return null;
     }
 
@@ -54,20 +57,25 @@ partial class Replay
           .Append(",\"gastro\":").Append(GastroStore.Json())
           .Append(",\"actors\":[");
         bool first = true;
-        for (int ai = 0; ai < AllActors.Count; ai++)
+        ClassifyNew(); // chỉ duyệt actor có thể lên bản đồ (khủng long, cá, thú, thịt), không phải cả ~4.000 actor
+        foreach (int ai in mapActorIdx)
         {
             var a = AllActors[ai];
+            if (a.Track.Count == 0) continue;
             string cat = Category(a, me);
-            if (cat == null || a.Track.Count == 0) continue;
-            string label = Species(a) ?? ShortNameS(a.Class ?? "?");
-            if (label.StartsWith("BP_")) label = label.Substring(3);
-            if (label.EndsWith("_C")) label = label.Substring(0, label.Length - 2);
-            string player = Species(a) != null ? owner(a) : "";
+            if (cat == null) continue;
+            string player = a.Kind == KindDino ? owner(a) : "";
             if (!first) sb.Append(',');
             first = false;
             // JSON của đối tượng chỉ dựng lại khi nó có dữ liệu mới (Ver đổi) -> mỗi lần cập nhật trực tiếp rất nhẹ
-            string key = a.Ver + "|" + cat + "|" + player + "|" + a.CloseTime.ToString(IC);
-            if (a.JsonKey != key) { a.JsonCache = ActorJson(a, ai, cat, label, player); a.JsonKey = key; }
+            if (a.JsonVer != a.Ver || a.JsonCat != cat || a.JsonPlayer != player || a.JsonClose != a.CloseTime)
+            {
+                string label = Species(a) ?? ShortNameS(a.Class ?? "?");
+                if (label.StartsWith("BP_")) label = label.Substring(3);
+                if (label.EndsWith("_C")) label = label.Substring(0, label.Length - 2);
+                a.JsonCache = ActorJson(a, ai, cat, label, player);
+                a.JsonVer = a.Ver; a.JsonCat = cat; a.JsonPlayer = player; a.JsonClose = a.CloseTime;
+            }
             sb.Append(a.JsonCache);
         }
         sb.Append("]}");

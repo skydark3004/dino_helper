@@ -24,11 +24,12 @@ partial class Replay
     {
         var res = new List<DinoAlert>();
         Actor me = null; Func<Actor, string> owner = null; bool meFound = false;
-        foreach (var a in AllActors)
+        ClassifyNew();
+        foreach (var a in dinoActors) // = actor có Species(a) != null, theo thứ tự AllActors
         {
-            if (a.CloseTime >= 0 || a.Class == null || !a.Class.Contains("/Characters/Dinosaurs/")) continue;
+            if (a.CloseTime >= 0) continue;
             string sid = Unq(a.Get("SteamId"));
-            if (sid == "" || a.Get("Controller") != "" || a.Get("bIsDead") == "1" || Species(a) == null) continue;
+            if (sid == "" || a.Get("Controller") != "" || a.Get("bIsDead") == "1") continue;
             DateTime last;
             bool recent = lastPresent.TryGetValue(sid, out last) && now - last <= gap;
             lastPresent[sid] = now;

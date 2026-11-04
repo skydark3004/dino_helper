@@ -520,7 +520,7 @@ class MainForm : Form
     {
         watchFile = f;
         watchTime = DateTime.MinValue; watchLen = -1;      // buộc cập nhật ngay lần đầu
-        liveRp = null; liveRpLen = 0;                      // lần đầu đọc cả file, sau đó chỉ đọc phần mới
+        DropLiveReader(); liveRpLen = 0;                   // lần đầu đọc cả file, sau đó chỉ đọc phần mới
         lastFullReport = DateTime.MinValue;
         liveRunning = true;
         if (server != null) server.SetLive(Path.GetFileName(Program.DefaultOutDir(f)));
@@ -529,10 +529,17 @@ class MainForm : Form
         LiveTick();
     }
 
+    // Bỏ bộ đọc trực tiếp hiện tại và đóng file nó đang giữ mở. Luồng đọc đang chạy thì nó tự đóng khi xong (LiveTick).
+    void DropLiveReader()
+    {
+        if (liveRp != null && !liveBusy) liveRp.CloseFile();
+        liveRp = null;
+    }
+
     void StopWatching(string reason)
     {
         if (watchFile != null) log.AppendText(string.Format("[{0:HH:mm:ss}] Ngừng theo dõi {1} ({2})\r\n", DateTime.Now, Path.GetFileName(watchFile), reason));
-        watchFile = null; liveRp = null; liveRunning = false;
+        watchFile = null; DropLiveReader(); liveRunning = false;
         lblLive.ForeColor = Color.Gray;
         lblLive.Text = "Chưa thấy replay nào đang quay";
     }
@@ -824,7 +831,7 @@ class MainForm : Form
             try
             {
                 // file bị ghi lại từ đầu (ngắn đi) hoặc lần đầu -> bộ đọc mới
-                if (rp == null || seenLen < liveRpLen) rp = Program.NewReplay(f, full, TextWriter.Null);
+                if (rp == null || seenLen < liveRpLen) { if (rp != null) rp.CloseFile(); rp = Program.NewReplay(f, full, TextWriter.Null); }
                 rp.LoadFile(f);
                 rp.ParseMore();
                 liveRpLen = seenLen;
@@ -842,11 +849,12 @@ class MainForm : Form
                 if (server != null && rp.LastMapJson != null) server.Push(Path.GetFileName(rp.OutDir), rp.LastMapJson);
                 msg = null;
             }
-            catch (Exception e) { msg = "lỗi: " + e.Message; rp = null; }
+            catch (Exception e) { msg = "lỗi: " + e.Message; if (rp != null) rp.CloseFile(); rp = null; }
             double took = sw.Elapsed.TotalSeconds;
             BeginInvoke((Action)(() =>
             {
                 if (watchFile == f) { liveRp = rp; watchTime = seenTime; watchLen = seenLen; liveRunning = stillLive; }
+                else if (rp != null) rp.CloseFile(); // đã chuyển file / ngừng theo dõi trong lúc đọc -> bỏ bộ đọc này
                 if (msg != null) log.AppendText(string.Format("[{0:HH:mm:ss}] {1}: {2}\r\n", DateTime.Now, Path.GetFileName(f), msg));
                 if (alerts != null && alerts.Count > 0 && chkAlert.Checked) ShowAlerts(alerts);
                 lblLive.Text = string.Format("{0} {1} · {2} · cập nhật {3:HH:mm:ss} ({4:0} ms)",

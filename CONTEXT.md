@@ -165,6 +165,11 @@ Unreal **LocalFileReplay**, không nén, không mã hoá. Kiểm chứng: ~60.00
 ## 6. Hiệu năng (đo 2026-11-03)
 - Trích xuất lần đầu: 4,7 MB ≈ 1 s; 30 MB ≈ 3 s.
 - Cập nhật trực tiếp: 3–12 ms/lần; game ghi file → bản đồ nhận ≈ **28 ms trung bình**.
+- **Tối ưu vòng cập nhật trực tiếp (2026-11-05)**: tool dùng 18 % một nhân khi đang quay (~7 lần/s × ~32 ms). Đo bằng chương trình riêng (build `src\*.cs` + file đo, `/main:Bench`, ghi dần bản copy replay đang quay 3,3 KB/lần) → ~2,3 ms/lần:
+  - **Mở file 15,6 ms** (Windows Defender quét lại file game vừa ghi), đọc thật chỉ 0,3 ms → `LoadFile` **giữ file mở** (`liveFs`, `FileShare.ReadWrite|Delete`, bufferSize 1) khi `bIsLive`; tự đóng khi quay xong, khi đường dẫn đổi, khi file ở đường dẫn nhỏ hơn file đang giữ (bị tạo lại); `CloseFile()` ở `Gui.DropLiveReader` / khi bỏ bộ đọc (luồng đọc đang chạy thì nó tự đóng lúc xong). Kiểm chứng: AHK đổi tên + mở ghi header khi tool đang giữ → được.
+  - **Duyệt cả ~4.400 actor nhiều lần mỗi lần** (`FindMe`, `PlayerStates`, `CheckNewDinos`, `WriteMap` với `Species`/`Contains` chuỗi class) → `ClassifyNew()` phân loại 1 lần (`Actor.Kind`, `SpeciesName`; class gán 1 lần lúc tạo, `AllActors` chỉ dài thêm), giữ danh sách `dinoActors`, `playerStateActors`, `mapActorIdx` theo thứ tự `AllActors`. `WriteMap` so trường (`JsonVer/JsonCat/JsonPlayer/JsonClose`) thay vì ghép chuỗi khoá, nhãn chỉ tính khi dựng lại. Kết quả: khủng long mới 2,9 → 0,02 ms, JSON bản đồ 9,9 → 1,1 ms.
+  - Còn lại: báo cáo đầy đủ (`Finish`) mỗi 15 s ~65–100 ms.
+  - Kiểm chứng: đọc nối tiếp (giữ file mở) = đọc cả file (JSON, actor, thông báo); `-simulate 8192` giống hệt; exe cũ vs mới trên 3 replay: summary/CSV/data.js giống từng byte.
 - Kiểm chứng tính đúng: `-simulate 1536` / `-simulate 8192` (ghi dần file ra file tạm, đọc nối tiếp) phải cho `events/positions/dinosaurs/players.csv` + `data.js` **giống hệt từng byte** với đọc cả file. Luôn chạy lại bài này sau khi sửa parser.
 
 ## 7. Cách kiểm thử đã dùng
