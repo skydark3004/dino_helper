@@ -48,7 +48,15 @@ class EdgeOverlay
     // trả về thông báo lỗi, hoặc null nếu đã mở
     public string Open(string url)
     {
-        if (IsOpen) { ShowWindow(Hwnd, 9 /*SW_RESTORE*/); return null; }
+        // Cửa sổ radar còn sót (vd từ lần chạy tool trước, trỏ tới cổng máy chủ cũ đã chết -> ảnh bản đồ không tải được):
+        // đóng rồi mở trang mới với địa chỉ hiện tại, không dùng lại.
+        IntPtr old = IsOpen ? Hwnd : Find();
+        if (old != IntPtr.Zero)
+        {
+            PostMessage(old, 0x0010 /*WM_CLOSE*/, IntPtr.Zero, IntPtr.Zero);
+            for (int i = 0; i < 40 && IsWindow(old); i++) System.Threading.Thread.Sleep(50);
+            Hwnd = IntPtr.Zero;
+        }
         string edge = EdgePath();
         if (edge == null) return "Không tìm thấy Microsoft Edge (msedge.exe).";
         // hồ sơ Edge riêng: không đụng trình duyệt đang dùng. Vị trí/cỡ do tool tự nhớ (Edge không nhớ cho cửa sổ --app).
@@ -130,7 +138,8 @@ class EdgeOverlay
             sb.Length = 0; GetClassName(h, sb, sb.Capacity);
             if (sb.ToString() != "Chrome_WidgetWin_1") return true;
             sb.Length = 0; GetWindowText(h, sb, sb.Capacity);
-            if (sb.ToString() == Title) { found = h; return false; }
+            string t = sb.ToString();
+            if (t == Title || t == "Isle Radar Overlay") { found = h; return false; } // tên cũ: trang map.html cũ còn mở
             return true;
         }, IntPtr.Zero);
         return found;

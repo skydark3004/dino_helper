@@ -1,2 +1,9 @@
 # Kết quả trích xuất replay (summary, CSV, data.js, bản đồ...) - tạo lại được bất cứ lúc nào
 output/
+
+# exe cũ đổi tên khi build lúc tool đang chạy (DinoReplayReader.oldHHmmss.exe)
+*.old*.exe
+
+# cài đặt riêng của tool (tự kiểm tra cập nhật...) và số bản (do workflow ghi vào gói)
+settings.txt
+version.txt

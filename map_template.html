@@ -9,7 +9,7 @@
   :root {
     --bg: #12140f; --panel: #1c1f18; --line: #2e3327; --text: #e4e6dc; --muted: #9aa08c;
     --accent: #e0b84a; --you: #ffd34d; --player: #ff5a4f; --dino: #ff9f43; --corpse: #a39e93;
-    --fish: #4fb3ff; --plant: #5fbf4a; --fruit: #f0a030; --meat: #c0392b; --burrow: #a47148; --ptero: #b483ff; --nest: #f5e6a8;
+    --fish: #4fb3ff; --animal: #8fe36b; --plant: #5fbf4a; --fruit: #f0a030; --meat: #c0392b; --burrow: #a47148; --ptero: #b483ff; --nest: #f5e6a8;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.4 "Segoe UI", system-ui, sans-serif; overflow: hidden; }
@@ -132,6 +132,7 @@ const GATEWAY = {
 const CATS = {
   me:     { name: "Khủng long của bạn", color: "--you",    r: 7, on: true },
   player: { name: "Người chơi khác",    color: "--player", r: 6, on: true },
+  animal: { name: "Thú AI (hươu, lợn…)", color: "--animal", r: 4.5, on: true },
   corpse: { name: "Xác",                color: "--corpse", r: 5, on: true },
   fish:   { name: "Cá",                 color: "--fish",   r: 3, on: true },
   meat:   { name: "Thịt / nội tạng",    color: "--meat",   r: 3, on: true },
@@ -172,10 +173,11 @@ function updateMeta() {
 const layersEl = document.getElementById("layers");
 const LAYER_INPUT = {}; // khoá lớp -> ô tick trên trang (để tool bật/tắt từ xa)
 let pendingLayers = null; // cài đặt lớp tool gửi gần nhất
+let sseDown = false;      // mở qua http nhưng mất kết nối với tool
 // Tool gửi {khoá: true/false} (sự kiện "layers" qua SSE) -> áp dụng + cập nhật ô tick
 function applyLayers(L) {
   const set = {
-    player: v => CATS.player.on = v, corpse: v => CATS.corpse.on = v, fish: v => CATS.fish.on = v, meat: v => CATS.meat.on = v,
+    player: v => CATS.player.on = v, animal: v => CATS.animal.on = v, corpse: v => CATS.corpse.on = v, fish: v => CATS.fish.on = v, meat: v => CATS.meat.on = v,
     ghost: v => SHOW.ghost = v, map: v => gw.on = v, poi: v => gw.poiOn = v, mud: v => gw.mudOn = v,
     gastro: v => gw.gastroOn = v, pvngastro: v => gw.pvnGastroOn = v,
   };
@@ -281,6 +283,10 @@ if (location.protocol.startsWith("http") && window.EventSource) {
   const name = decodeURIComponent(location.pathname.split("/").slice(-2)[0]);
   const es = new EventSource("/events/" + encodeURIComponent(name));
   es.onmessage = e => { try { const d = JSON.parse(e.data); if (!DATA || d.ver !== DATA.ver) applyData(d); } catch (err) {} };
+  // mất kết nối với tool (tool tắt / khởi động lại ở cổng khác) -> báo trên bản đồ; EventSource tự thử nối lại
+  es.onerror = () => { if (!sseDown) { sseDown = true; draw(); } };
+  es.onopen = () => { if (sseDown) { sseDown = false; draw(); } };
+  es.addEventListener("zoom", e => zoomStep(e.data === "in")); // phím tắt Ctrl+F10 / Ctrl+F11 của tool
   es.addEventListener("layers", e => { try { pendingLayers = JSON.parse(e.data); applyLayers(pendingLayers); } catch (err) {} });
 } else {
   // Mở thẳng file map.html: tự kiểm tra version.js
@@ -341,12 +347,17 @@ function nearestPoi(p) {
   return best ? { name: best, d: Math.round(bd) } : null;
 }
 
+// Tên tiếng Việt cho thú AI (tên class BP_<Loài>); loài khác giữ nguyên
+const VI_ANIMAL = { Deer: "Hươu", Boar: "Lợn rừng", Goat: "Dê", Rabbit: "Thỏ", Chicken: "Gà", Crab: "Cua", Turtle: "Rùa", Seaturtle: "Rùa biển", Frog: "Ếch" };
+const viName = n => VI_ANIMAL[n] || n;
+
 // Vị trí cuối cùng của khủng long đã ra khỏi tầm server gửi (kênh đóng) trong GHOST_S giây gần đây.
 // Bỏ qua nếu cùng người chơi đó đang hiện lại ở một kênh khác, hoặc kênh đóng vì chết (đã thành xác).
-const GHOST_S = 300;
+const GHOST_S = 180; // mất dấu quá 3 phút -> không hiện nữa
 function ghostAt(a, time) {
   if (!SHOW.ghost || a.e === undefined || time <= a.e || time - a.e > GHOST_S || !a.t.length) return null;
-  if (a.p && actors.some(b => b !== a && b.p === a.p && posAt(b, time))) return null;
+  // cùng người chơi: đang hiện ở kênh khác, hoặc có lần mất dấu mới hơn -> chỉ giữ 1 chấm (lần gần nhất)
+  if (a.p && actors.some(b => b !== a && b.p === a.p && (posAt(b, time) || (b.e !== undefined && b.e <= time && (b.e > a.e || (b.e === a.e && b.i > a.i)))))) return null;
   let last = null;
   for (const s of a.t) { if (s[0] > a.e) break; last = s; }
   return last;
@@ -399,6 +410,8 @@ function ensureGateway() {
   ["base", "water", "land"].forEach((n, i) => {
     const im = new Image();
     im.onload = () => { gw.imgs[i] = im; if (gw.imgs.filter(Boolean).length === 3) setTimeout(buildMapCanvases, 0); };
+    // lỗi tải (tool vừa tắt/khởi động lại, mạng chậm...) -> thử lại sau 2 s, không đứng mãi ở "Đang tải"
+    im.onerror = () => { gw.imgErr = true; draw(); setTimeout(() => { im.src = `${GATEWAY.dir}/${n}.webp?r=${Date.now()}`; }, 2000); };
     im.src = `${GATEWAY.dir}/${n}.webp`;
   });
   addToggle("Ảnh bản đồ Gateway", "#3a5a40", "", () => gw.on, v => gw.on = v, "map");
@@ -539,7 +552,7 @@ function render() {
     drawGateway(W, H);
   } else if (gw.on && DATA && /gateway/i.test(DATA.map)) {
     ctx.fillStyle = "rgba(255,255,255,0.5)"; ctx.font = `${13 * dpr}px Segoe UI`;
-    ctx.fillText("Đang tải bản đồ…", 16 * dpr, 40 * dpr);
+    ctx.fillText(gw.imgErr ? "Không tải được ảnh bản đồ – đang thử lại…" : "Đang tải bản đồ…", 16 * dpr, 40 * dpr);
   }
 
   // lưới (đơn vị Unreal: 100 = 1 m)
@@ -612,14 +625,7 @@ function render() {
     ctx.setLineDash([]);
   }
 
-  // vệt di chuyển của khủng long
-  for (const a of actors) {
-    if (OVERLAY || !CATS[a.c].on || a.t.length < 2 || !["me", "player", "dino"].includes(a.c)) continue; // overlay: bỏ vệt cho gọn
-    ctx.strokeStyle = CATS[a.c].hex; ctx.globalAlpha = 0.6; ctx.lineWidth = 2 * dpr; ctx.beginPath();
-    let started = false;
-    for (const s of a.t) { if (s[0] > t) break; const [sx, sy] = toScreen(s[1], s[2]); if (!started) { ctx.moveTo(sx, sy); started = true; } else ctx.lineTo(sx, sy); }
-    ctx.stroke(); ctx.globalAlpha = 1;
-  }
+  // (đã bỏ vẽ vệt đường đi của khủng long theo yêu cầu – cho nhẹ; dữ liệu đường đi vẫn giữ để tua thời gian)
 
   // đường chỉ dẫn từ bạn tới mục tiêu đang ghim (liền) / đang rê chuột (nét đứt)
   const myHead = me ? headingAt(me, t) : null;
@@ -647,7 +653,7 @@ function render() {
   }
 
   // chấm (vẽ lớp nhỏ trước, khủng long sau cùng)
-  const order = ["meat", "fish", "corpse", "player", "me"];
+  const order = ["meat", "fish", "animal", "corpse", "player", "me"];
   const labels = [];
   for (const c of order) {
     if (!CATS[c] || !CATS[c].on) continue;
@@ -670,18 +676,17 @@ function render() {
       }
       const [sx, sy] = toScreen(p[1], p[2]);
       if (sx < -20 || sy < -20 || sx > W + 20 || sy > H + 20) continue;
-      const rr = CATS[c].r * dpr * (["me", "player", "dino", "corpse"].includes(c) ? 1 : Math.min(2, Math.max(1, view.s * 300)));
+      const rr = CATS[c].r * dpr * (["me", "player", "dino", "corpse", "animal"].includes(c) ? 1 : Math.min(2, Math.max(1, view.s * 300)));
       if (c === "me" && myHead !== null) {
         // khủng long của bạn: mũi tên chỉ hướng đang quay mặt
         ctx.save(); ctx.translate(sx, sy); ctx.rotate(myHead * Math.PI / 180);
-        const k = dpr * 1.6;
+        const k = dpr * 1.05; // nhỏ lại cho vừa bản đồ
         ctx.beginPath(); ctx.moveTo(0, -10 * k); ctx.lineTo(7 * k, 7 * k); ctx.lineTo(0, 3.5 * k); ctx.lineTo(-7 * k, 7 * k); ctx.closePath();
         ctx.fill(); ctx.strokeStyle = "#000"; ctx.lineWidth = 1.5 * dpr; ctx.stroke(); ctx.restore();
-        labels.push({ a, c, sx, sy, x: sx + 14 * dpr });
-        continue;
+        continue; // chỉ mũi tên, không nhãn ("Bạn" / loài / %)
       }
       ctx.beginPath(); ctx.arc(sx, sy, rr, 0, Math.PI * 2); ctx.fill();
-      if (["me", "player", "dino", "corpse"].includes(c)) {
+      if (["me", "player", "dino", "corpse", "animal"].includes(c)) {
         ctx.strokeStyle = "#000"; ctx.lineWidth = 1.5 * dpr; ctx.stroke();
         labels.push({ a, c, sx, sy, x: sx + rr + 4 * dpr });
       }
@@ -693,6 +698,11 @@ function render() {
   }
 
   placeLabels(labels, dpr, mp);
+  if (sseDown) {
+    const msg = OVERLAY ? "⚠ Mất kết nối với tool – bấm \"Mở overlay radar\" lại" : "⚠ Mất kết nối với tool – dữ liệu không còn cập nhật";
+    ctx.font = `bold ${12 * dpr}px Segoe UI`; ctx.textAlign = "center"; ctx.lineWidth = 4 * dpr; ctx.strokeStyle = "rgba(0,0,0,0.9)"; ctx.fillStyle = "#ff8a80";
+    ctx.strokeText(msg, W / 2, 22 * dpr); ctx.fillText(msg, W / 2, 22 * dpr); ctx.textAlign = "left";
+  }
   if (OVERLAY && !(mp)) {
     ctx.font = `${12 * dpr}px Segoe UI`; ctx.fillStyle = "rgba(255,255,255,0.75)"; ctx.textAlign = "center";
     ctx.fillText(DATA ? "Chưa thấy khủng long của bạn" : "Chưa có replay đang quay", W / 2, H / 2); ctx.textAlign = "left";
@@ -724,32 +734,49 @@ function placeLabels(labels, dpr, mp) {
     else if (c !== "me" && mp) { const p = posAt(a, t); if (p) extra = [extra, Math.round(dist(mp, p)) + " m"].filter(Boolean).join(" · "); }
     if (c === "me") { L.l1 = "Bạn"; L.l2 = [a.n, extra].filter(Boolean).join(" · "); }
     else if (a.p) { L.l1 = a.p; L.l2 = [a.n, extra].filter(Boolean).join(" · "); }
-    else { L.l1 = (c === "corpse" ? "Xác · " : "") + a.n; L.l2 = extra; }
+    else { L.l1 = (c === "corpse" ? "Xác · " : "") + viName(a.n); L.l2 = extra; }
     ctx.font = F1; let w = ctx.measureText(L.l1).width;
     if (L.l2) { ctx.font = F2; w = Math.max(w, ctx.measureText(L.l2).width); }
-    L.w = w + 4 * dpr; L.h = (L.l2 ? 2 : 1) * LH;
-    if (L.x + L.w > cv.width && L.sx - (L.x - L.sx) - L.w >= 0) L.x = L.sx - (L.x - L.sx) - L.w; // sát mép phải -> nhãn sang trái chấm
+    const BAR = 7 * dpr; // vạch màu (cùng màu chấm) bên trái nhãn
+    L.w = w + BAR + 3 * dpr; L.h = (L.l2 ? 2 : 1) * LH;
+    L.gap = L.x - L.sx; L.rr = Math.max(3 * dpr, L.gap - 4 * dpr); // khoảng cách chấm -> nhãn, bán kính chấm
+    L.col = c === "me" ? "#ffd34d" : CATS[c].hex;
     L.pri = c === "me" ? 0 : a.i === pinnedId ? 1 : L.ghost ? 3 : 2;
   }
   labels.sort((p, q) => p.pri - q.pri);
-  const placed = [];
+  // vật cản: mọi chấm (để nhãn không che marker của con khác) + các nhãn đã đặt
+  const placed = labels.map(L => ({ x: L.sx - L.rr - 2 * dpr, y: L.sy - L.rr - 2 * dpr, w: 2 * L.rr + 4 * dpr, h: 2 * L.rr + 4 * dpr }));
   const hits = (x, y, w, h) => placed.some(b => x < b.x + b.w && b.x < x + w && y < b.y + b.h && b.y < y + h);
+  const W = cv.width, H = cv.height, inView = (x, y, w, h) => x >= 0 && y >= 0 && x + w <= W && y + h <= H;
   for (const L of labels) {
-    const y0 = L.sy - L.h / 2;
-    let y = y0;
-    for (let k = 1; k < 40 && hits(L.x, y, L.w, L.h); k++) y = y0 + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * (LH / 2);
-    placed.push({ x: L.x, y, w: L.w, h: L.h });
-    if (Math.abs(y - y0) > 1) { // đường nối nhãn bị dịch về chấm
-      ctx.strokeStyle = "rgba(255,255,255,0.55)"; ctx.lineWidth = 1 * dpr;
-      ctx.beginPath(); ctx.moveTo(L.sx, L.sy); ctx.lineTo(L.x - 2 * dpr, y + L.h / 2); ctx.stroke();
-    }
-    ctx.strokeStyle = "rgba(0,0,0,0.85)"; ctx.lineWidth = 3 * dpr;
+    const { sx, sy, w, h, gap } = L, d = 2 * dpr;
+    // chỗ thử, gần chấm trước: phải, trái, trên, dưới, 4 góc; sau đó dịch dần lên/xuống ở bên phải rồi bên trái (tối đa ~3 dòng)
+    const cand = [[sx + gap, sy - h / 2], [sx - gap - w, sy - h / 2], [sx - w / 2, sy - gap - h], [sx - w / 2, sy + gap],
+      [sx + gap - d, sy - h - d], [sx + gap - d, sy + d], [sx - gap - w + d, sy - h - d], [sx - gap - w + d, sy + d]];
+    for (let k = 1; k <= 6; k++) for (const s of [1, -1]) { cand.push([sx + gap, sy - h / 2 + s * k * LH / 2]); cand.push([sx - gap - w, sy - h / 2 + s * k * LH / 2]); }
+    let pick = cand.find(([x, y]) => inView(x, y, w, h) && !hits(x, y, w, h))
+      || cand.find(([x, y]) => !hits(x, y, w, h)) || cand[inView(cand[0][0], cand[0][1], w, h) ? 0 : 1];
+    const [x, y] = pick;
+    placed.push({ x, y, w, h });
     ctx.globalAlpha = L.ghost ? 0.7 : 1;
+    // đường nối cùng màu chấm: từ mép chấm tới điểm gần nhất của nhãn (chỉ khi nhãn không nằm sát chấm)
+    const nx = Math.max(x, Math.min(sx, x + w)), ny = Math.max(y, Math.min(sy, y + h));
+    const dd = Math.hypot(nx - sx, ny - sy);
+    if (dd > gap + 3 * dpr) {
+      const ux = (nx - sx) / dd, uy = (ny - sy) / dd;
+      ctx.strokeStyle = "rgba(0,0,0,0.7)"; ctx.lineWidth = 3.5 * dpr;
+      ctx.beginPath(); ctx.moveTo(sx + ux * L.rr, sy + uy * L.rr); ctx.lineTo(nx, ny); ctx.stroke();
+      ctx.strokeStyle = L.col; ctx.lineWidth = 1.5 * dpr; ctx.stroke();
+    }
+    ctx.fillStyle = "rgba(0,0,0,0.7)"; ctx.fillRect(x, y + 1 * dpr, 5 * dpr, h - 2 * dpr);
+    ctx.fillStyle = L.col; ctx.fillRect(x + 1 * dpr, y + 2 * dpr, 3 * dpr, h - 4 * dpr);
+    const tx = x + 7 * dpr;
+    ctx.strokeStyle = "rgba(0,0,0,0.85)"; ctx.lineWidth = 3 * dpr;
     ctx.font = F1; ctx.fillStyle = L.c === "me" ? "#ffd34d" : "#fff";
-    ctx.strokeText(L.l1, L.x, y + 11 * dpr); ctx.fillText(L.l1, L.x, y + 11 * dpr);
+    ctx.strokeText(L.l1, tx, y + 11 * dpr); ctx.fillText(L.l1, tx, y + 11 * dpr);
     if (L.l2) {
       ctx.font = F2; ctx.fillStyle = "#d8dccb";
-      ctx.strokeText(L.l2, L.x, y + LH + 10 * dpr); ctx.fillText(L.l2, L.x, y + LH + 10 * dpr);
+      ctx.strokeText(L.l2, tx, y + LH + 10 * dpr); ctx.fillText(L.l2, tx, y + LH + 10 * dpr);
     }
   }
   ctx.restore();
@@ -764,7 +791,7 @@ function updateSide() {
     tgEl.innerHTML = ""; return;
   }
   const myHead = headingAt(me, t);
-  const name = a => esc(a.p || a.n) + (a.c === "corpse" ? " (xác)" : "");
+  const name = a => esc(a.p || viName(a.n)) + (a.c === "corpse" ? " (xác)" : "");
 
   // mục tiêu đang ghim
   const pin = pinnedActor(), pp = pin ? posAt(pin, t) : null;
@@ -783,7 +810,7 @@ function updateSide() {
   }
 
   // danh sách gần nhất (bấm để ghim)
-  const list = actors.filter(a => ["player", "dino", "corpse"].includes(a.c)).map(a => { const p = posAt(a, t); return p ? { a, g: guide(mp, myHead, p) } : null; })
+  const list = actors.filter(a => ["player", "dino", "corpse", "animal"].includes(a.c) && CATS[a.c].on).map(a => { const p = posAt(a, t); return p ? { a, g: guide(mp, myHead, p) } : null; })
     .filter(Boolean).sort((x, y) => x.g.d - y.g.d).slice(0, 8);
   const ng = gw.gastroOn ? nearestGastro(mp) : null;
   const gastroHtml = ng ? `<div><span class="sw" style="display:inline-block;background:#d9d4c3;border-radius:2px"></span> Sỏi gần nhất – <b>${guideShort(guide(mp, myHead, [0, ng.g[0], ng.g[1], mp[3]]))}</b></div>` : "";
@@ -812,16 +839,21 @@ cv.addEventListener("mousemove", e => {
 });
 cv.addEventListener("wheel", e => {
   e.preventDefault();
-  if (OVERLAY) { // đổi bán kính radar, nhớ lại cho lần sau
-    ovR = Math.min(3000, Math.max(50, Math.round(ovR * (e.deltaY < 0 ? 0.8 : 1.25))));
-    try { localStorage.setItem("isleOverlayR", ovR); } catch (err) {}
-    draw(); return;
-  }
+  if (OVERLAY) { zoomStep(e.deltaY < 0); return; }
   const [wx, wy] = toWorld(e.offsetX, e.offsetY);
   view.s *= e.deltaY < 0 ? 1.25 : 0.8;
   const [nx, ny] = toWorld(e.offsetX, e.offsetY);
   view.cx += wx - nx; view.cy += wy - ny; draw();
 }, { passive: false });
+
+// Phóng to (zin = true) / thu nhỏ 1 nấc. Overlay: đổi bán kính radar (nhớ lại); bản đồ: zoom quanh tâm màn hình.
+function zoomStep(zin) {
+  if (OVERLAY) {
+    ovR = Math.min(3000, Math.max(50, Math.round(ovR * (zin ? 0.8 : 1.25))));
+    try { localStorage.setItem("isleOverlayR", ovR); } catch (err) {}
+  } else view.s *= zin ? 1.25 : 0.8;
+  draw();
+}
 
 function nearestAt(e) {
   let best = null, bd = 12;

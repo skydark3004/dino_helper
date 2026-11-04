@@ -28,6 +28,7 @@ jobs:
           $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
           & $csc /nologo /optimize /nowarn:649 /target:winexe `
             /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Management.dll `
+            /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll `
             /out:pkg\DinoHelper\DinoReplayReader.exe src\*.cs
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
@@ -38,6 +39,8 @@ jobs:
           Copy-Item map_template.html, DocNhanh.bat, DocDayDu.bat, IsleReplayConfig.bat, HUONG_DAN.txt $d
           if (Test-Path gastro_learned.txt) { Copy-Item gastro_learned.txt $d }
           Copy-Item maps $d -Recurse
+          # tab "Cập nhật" của tool đọc file này để biết bản đang dùng
+          Set-Content "$d\version.txt" "build-${{ github.run_number }}" -NoNewline
           Compress-Archive -Path $d -DestinationPath DinoHelper.zip -CompressionLevel Optimal
 
       - name: Tạo Release (Latest)

@@ -37,10 +37,14 @@ class MainForm : Form
     Button btnRun, btnOpenOut, btnOpenMap, btnDelete, btnLiveMap;
     string lastOut;
     TextBox txtCutFrom, txtCutTo; Button btnCut; volatile bool cutBusy;
-    TabControl tabs; TabPage tabCutPage, tabMapPage;
+    TabControl tabs; TabPage tabCutPage, tabMapPage, tabUpdatePage;
+    // tab "Cập nhật"
+    Label lblVerCur, lblVerNew, lblUpdStatus; TextBox txtNotes; Button btnCheckUpd, btnDoUpd; CheckBox chkAutoUpd;
+    Updater.Info latestInfo; volatile bool updBusy;
     // lớp bản đồ bật/tắt: khoá (giống map_template.html) -> tên hiển thị; lưu ở map_layers.txt cạnh exe
     static readonly string[][] LayerDefs = {
         new[] { "player", "Người chơi khác" }, new[] { "ghost", "Mất dấu (vị trí cuối khi ra khỏi tầm)" },
+        new[] { "animal", "Thú AI (hươu, lợn, thỏ, gà, cua…)" },
         new[] { "corpse", "Xác" }, new[] { "fish", "Cá" }, new[] { "meat", "Thịt / nội tạng" },
         new[] { "poi", "Địa danh" }, new[] { "mud", "Vũng bùn" }, new[] { "gastro", "Sỏi đã nhặt (tự ghi)" },
         new[] { "pvngastro", "Sỏi theo PVN (không chính xác)" }, new[] { "map", "Ảnh bản đồ Gateway" } };
@@ -61,7 +65,7 @@ class MainForm : Form
     readonly EdgeOverlay overlay = new EdgeOverlay();
     Button btnOverlay; CheckBox chkOverlayLock; NumericUpDown numOverlayOpacity; System.Windows.Forms.Timer ovTimer;
     bool ovWanted, ovSeen; DateTime ovOpenedAt;
-    const int HOTKEY_OVERLAY = 0x4952;
+    const int HOTKEY_OVERLAY = 0x4952, HOTKEY_ZOOM_IN = 0x4953, HOTKEY_ZOOM_OUT = 0x4954;
 
     public MainForm()
     {
@@ -81,7 +85,8 @@ class MainForm : Form
         var tabRead = new TabPage("Đọc replay & bản đồ");
         tabCutPage = new TabPage("Cắt replay");
         tabMapPage = new TabPage("Bản đồ & overlay");
-        tabs.TabPages.Add(tabRead); tabs.TabPages.Add(tabMapPage); tabs.TabPages.Add(tabCutPage);
+        tabUpdatePage = new TabPage("Cập nhật");
+        tabs.TabPages.Add(tabRead); tabs.TabPages.Add(tabMapPage); tabs.TabPages.Add(tabCutPage); tabs.TabPages.Add(tabUpdatePage);
         outer.Controls.Add(tabs);
 
         // tab 1: đọc replay, bản đồ, theo dõi trực tiếp, báo, overlay
@@ -136,6 +141,7 @@ class MainForm : Form
         btnTestAlert.Margin = new Padding(12, 0, 0, 0);
         row2.Controls.Add(chkAlert); row2.Controls.Add(chkAlertSound); row2.Controls.Add(btnTestAlert);
         BuildMapTab();
+        BuildUpdateTab();
         ovTimer = new System.Windows.Forms.Timer { Interval = 250 };
         ovTimer.Tick += (s, e) => OverlayTick();
         ovTimer.Start();
@@ -532,6 +538,117 @@ class MainForm : Form
     }
 
     // Bản đồ trực tiếp: địa chỉ cố định luôn hiện replay đang quay (tự chuyển khi sang file mới)
+    // ---------- tab "Cập nhật" (tải bản Latest từ GitHub Releases) ----------
+    void BuildUpdateTab()
+    {
+        var lay = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(8), ColumnCount = 1, RowCount = 7 };
+        for (int i = 0; i < 6; i++) lay.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        lay.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        tabUpdatePage.Controls.Add(lay);
+        string cur = Updater.CurrentVersion();
+        lblVerCur = new Label { AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(0, 0, 0, 4),
+            Text = "Bản đang dùng: " + (cur ?? "tự build trên máy (không có version.txt)") };
+        lblVerNew = new Label { AutoSize = true, Margin = new Padding(0, 0, 0, 8), Text = "Bản mới nhất: chưa kiểm tra" };
+        lay.Controls.Add(lblVerCur); lay.Controls.Add(lblVerNew);
+        var row = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0) };
+        btnCheckUpd = MakeButton("Kiểm tra bản mới", (s, e) => CheckUpdate(true));
+        btnDoUpd = MakeButton("Cập nhật ngay", (s, e) => DoUpdate());
+        btnDoUpd.Font = new Font(Font, FontStyle.Bold); btnDoUpd.Enabled = false;
+        var btnPage = MakeButton("Mở trang Releases", (s, e) => { try { Process.Start(new ProcessStartInfo(Updater.PageUrl) { UseShellExecute = true }); } catch { } });
+        row.Controls.Add(btnCheckUpd); row.Controls.Add(btnDoUpd); row.Controls.Add(btnPage);
+        lay.Controls.Add(row);
+        chkAutoUpd = new CheckBox { Text = "Tự kiểm tra bản mới khi mở tool", AutoSize = true, Checked = LoadSetting("autoupdatecheck", "1") == "1", Margin = new Padding(0, 8, 0, 0) };
+        chkAutoUpd.CheckedChanged += (s, e) => SaveSetting("autoupdatecheck", chkAutoUpd.Checked ? "1" : "0");
+        lay.Controls.Add(chkAutoUpd);
+        lblUpdStatus = new Label { AutoSize = true, ForeColor = Color.Gray, MaximumSize = new Size(760, 0), Margin = new Padding(0, 8, 0, 4),
+            Text = "Cập nhật: tải " + Updater.ZipUrl + " rồi thay exe, map_template.html, maps\\, file .bat và tự mở lại tool. Giữ nguyên cài đặt lớp (map_layers.txt); chỗ sỏi (gastro_learned.txt) được gộp, không mất." };
+        lay.Controls.Add(lblUpdStatus);
+        lay.Controls.Add(new Label { Text = "Có gì mới:", AutoSize = true, Margin = new Padding(0, 6, 0, 2) });
+        txtNotes = new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical };
+        lay.Controls.Add(txtNotes);
+        Updater.CleanupOld();
+        Shown += (s, e) => { if (chkAutoUpd.Checked) CheckUpdate(false); };
+    }
+
+    // manual = bấm nút (báo cả khi lỗi / đã mới nhất); tự kiểm tra lúc mở thì chỉ báo khi có bản mới
+    void CheckUpdate(bool manual)
+    {
+        if (updBusy) return;
+        updBusy = true; btnCheckUpd.Enabled = false; lblVerNew.Text = "Bản mới nhất: đang kiểm tra…";
+        new Thread(() =>
+        {
+            Updater.Info info = null; string err = null;
+            try { info = Updater.CheckLatest(); } catch (Exception e) { err = e.Message; }
+            try
+            {
+                BeginInvoke((Action)(() =>
+                {
+                    updBusy = false; btnCheckUpd.Enabled = true;
+                    if (err != null) { lblVerNew.Text = "Bản mới nhất: không kiểm tra được (" + err + ")"; if (manual) log.AppendText("[Cập nhật] Lỗi: " + err + "\r\n"); return; }
+                    latestInfo = info;
+                    string curV = Updater.CurrentVersion();
+                    int curN = Updater.BuildNumber(curV), newN = Updater.BuildNumber(info.Tag);
+                    bool newer = curV != null && newN > curN; // bản tự build (không có version.txt): không so được, không báo
+                    string when = info.Date.Length >= 10 ? info.Date.Substring(0, 10) : info.Date;
+                    lblVerNew.Text = "Bản mới nhất: " + info.Tag + (when != "" ? "  (" + when + ")" : "") + (newer ? "  –  CÓ BẢN MỚI" : curV == null ? "" : "  –  bạn đang dùng bản mới nhất");
+                    lblVerNew.ForeColor = newer ? Color.ForestGreen : SystemColors.ControlText;
+                    txtNotes.Text = (info.Notes ?? "").Replace("\r\n", "\n").Replace("\n", "\r\n");
+                    btnDoUpd.Enabled = true; // vẫn cho cài lại khi đã mới nhất / bản tự build
+                    tabUpdatePage.Text = newer ? "Cập nhật (có bản mới)" : "Cập nhật";
+                    if (newer) log.AppendText("[Cập nhật] Có bản mới " + info.Tag + " – vào tab \"Cập nhật\" để cài.\r\n");
+                }));
+            }
+            catch { }
+        }) { IsBackground = true }.Start();
+    }
+
+    void DoUpdate()
+    {
+        if (updBusy) return;
+        const string T = "Cập nhật";
+        if (Directory.Exists(Path.Combine(Program.ExeDir, "src")) &&
+            MessageBox.Show(this, "Thư mục này có mã nguồn (src\\). Cập nhật sẽ ghi đè DinoReplayReader.exe, map_template.html và các file .bat bằng bản trên GitHub.\n\nTiếp tục?", T,
+                MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK) return;
+        if (MessageBox.Show(this, "Tải và cài " + (latestInfo != null ? latestInfo.Tag : "bản mới nhất") + "? Tool sẽ tự tắt rồi mở lại (overlay đang mở sẽ đóng).", T,
+            MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+        updBusy = true; btnDoUpd.Enabled = btnCheckUpd.Enabled = false; UseWaitCursor = true;
+        new Thread(() =>
+        {
+            string exe = null, err = null;
+            try { exe = Updater.DownloadAndApply(msg => { try { BeginInvoke((Action)(() => { lblUpdStatus.Text = msg; lblUpdStatus.ForeColor = SystemColors.ControlText; })); } catch { } }); }
+            catch (Exception e) { err = e.Message; }
+            try
+            {
+                BeginInvoke((Action)(() =>
+                {
+                    UseWaitCursor = false; updBusy = false; btnDoUpd.Enabled = btnCheckUpd.Enabled = true;
+                    if (err != null) { lblUpdStatus.Text = "Cập nhật thất bại: " + err; lblUpdStatus.ForeColor = Color.Firebrick; ShowError("Cập nhật thất bại: " + err, T); return; }
+                    lblUpdStatus.Text = "Đã cài xong – đang mở lại tool…";
+                    try { Process.Start(new ProcessStartInfo(exe, "-afterupdate " + Process.GetCurrentProcess().Id) { UseShellExecute = false, WorkingDirectory = Program.ExeDir }); }
+                    catch (Exception e) { ShowError("Đã cài xong nhưng không mở lại được tool: " + e.Message + "\nHãy tự mở DinoReplayReader.exe.", T); }
+                    Close();
+                }));
+            }
+            catch { }
+        }) { IsBackground = true }.Start();
+    }
+
+    static string SettingsFile { get { return Path.Combine(Program.ExeDir, "settings.txt"); } }
+    static string LoadSetting(string key, string def)
+    {
+        try { foreach (var l in File.ReadAllLines(SettingsFile)) { int k = l.IndexOf('='); if (k > 0 && l.Substring(0, k).Trim() == key) return l.Substring(k + 1).Trim(); } } catch { }
+        return def;
+    }
+    static void SaveSetting(string key, string val)
+    {
+        try
+        {
+            var lines = File.Exists(SettingsFile) ? File.ReadAllLines(SettingsFile).Where(l => !l.StartsWith(key + "=")).ToList() : new List<string>();
+            lines.Add(key + "=" + val); File.WriteAllLines(SettingsFile, lines);
+        }
+        catch { }
+    }
+
     // ---------- tab "Bản đồ & overlay" ----------
     void BuildMapTab()
     {
@@ -555,7 +672,7 @@ class MainForm : Form
         rowOv2.Controls.Add(numOverlayOpacity);
         rowOv2.Controls.Add(new Label { Text = "%", AutoSize = true, Margin = new Padding(2, 7, 0, 0) });
         lay.Controls.Add(rowOv2);
-        lay.Controls.Add(new Label { Text = "Mở khoá (Ctrl+F9) để kéo, đổi cỡ, lăn chuột đổi bán kính radar.", AutoSize = true, ForeColor = Color.Gray, Margin = new Padding(0, 4, 0, 0) });
+        lay.Controls.Add(new Label { Text = "Ctrl+F10 = phóng to, Ctrl+F11 = thu nhỏ (radar và bản đồ đang mở, không cần mở khoá). Mở khoá (Ctrl+F9) để kéo, đổi cỡ.", AutoSize = true, ForeColor = Color.Gray, Margin = new Padding(0, 4, 0, 0) });
 
         lay.Controls.Add(new Label { Text = "Hiện trên bản đồ / overlay", AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(0, 18, 0, 4) });
         var saved = LoadLayers();
@@ -649,18 +766,27 @@ class MainForm : Form
     {
         base.OnHandleCreated(e);
         RegisterHotKey(Handle, HOTKEY_OVERLAY, 0x0002 /*MOD_CONTROL*/ | 0x4000 /*MOD_NOREPEAT*/, (uint)Keys.F9);
+        // zoom radar/bản đồ mà không phải mở khoá overlay (giữ phím được: không có MOD_NOREPEAT)
+        RegisterHotKey(Handle, HOTKEY_ZOOM_IN, 0x0002, (uint)Keys.F10);
+        RegisterHotKey(Handle, HOTKEY_ZOOM_OUT, 0x0002, (uint)Keys.F11);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         UnregisterHotKey(Handle, HOTKEY_OVERLAY);
+        UnregisterHotKey(Handle, HOTKEY_ZOOM_IN); UnregisterHotKey(Handle, HOTKEY_ZOOM_OUT);
         if (ovWanted) overlay.Close(); // overlay không còn dữ liệu khi tool tắt
         base.OnFormClosing(e);
     }
 
     protected override void WndProc(ref Message m)
     {
-        if (m.Msg == 0x0312 /*WM_HOTKEY*/ && m.WParam.ToInt32() == HOTKEY_OVERLAY) { chkOverlayLock.Checked = !chkOverlayLock.Checked; return; }
+        if (m.Msg == 0x0312 /*WM_HOTKEY*/)
+        {
+            int id = m.WParam.ToInt32();
+            if (id == HOTKEY_OVERLAY) { chkOverlayLock.Checked = !chkOverlayLock.Checked; return; }
+            if (id == HOTKEY_ZOOM_IN || id == HOTKEY_ZOOM_OUT) { if (server != null) server.PushEvent("zoom", id == HOTKEY_ZOOM_IN ? "in" : "out"); return; }
+        }
         base.WndProc(ref m);
     }
 

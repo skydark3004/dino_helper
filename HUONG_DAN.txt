@@ -14,9 +14,11 @@ DINO HELPER - HƯỚNG DẪN NHANH
    - Báo ở góc màn hình khi có khủng long người chơi mới vào vùng.
 5. Tab "Đọc replay & bản đồ": trích xuất replay cũ -> báo cáo + bản đồ.
    Tab "Cắt replay": cắt 1 đoạn replay để xem lại trong game.
+   Tab "Cập nhật": tự kiểm tra bản mới khi mở tool; bấm "Cập nhật ngay" để tải và cài
+   (tool tự mở lại, giữ nguyên cài đặt và các chỗ sỏi đã ghi).
 
 Lưu ý:
 - Replay chỉ có những gì ở gần bạn: khủng long ra xa ~300-500 m (tuỳ loài) sẽ mất khỏi bản đồ
-  (bản đồ giữ "mất dấu" - vị trí cuối cùng - trong 5 phút).
+  (bản đồ giữ "mất dấu" - vị trí cuối cùng - trong 3 phút).
 - Chỗ có sỏi được tự ghi mỗi khi bạn (hoặc khủng long khác gần bạn) nhặt sỏi, lưu ở gastro_learned.txt.
 - Bản mới nhất luôn ở: https://github.com/skydark3004/dino_helper/releases/latest/download/DinoHelper.zip

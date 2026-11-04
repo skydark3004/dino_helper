@@ -53,6 +53,14 @@ static class Program
     [STAThread]
     static int Main(string[] args)
     {
+        // vừa tự cập nhật: đợi bản cũ tắt hẳn (nhả cổng máy chủ bản đồ, phím tắt) rồi mở giao diện như bình thường
+        if (args.Length == 2 && args[0] == "-afterupdate")
+        {
+            int pid;
+            if (int.TryParse(args[1], out pid))
+                try { System.Diagnostics.Process.GetProcessById(pid).WaitForExit(15000); } catch { }
+            args = new string[0];
+        }
         // không có tham số -> mở giao diện
         if (args.Length == 0)
         {

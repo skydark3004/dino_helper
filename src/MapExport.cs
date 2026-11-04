@@ -15,6 +15,8 @@ partial class Replay
         string c = a.Class ?? "";
         if (Species(a) != null) return a.Get("bIsDead") == "1" ? "corpse" : (a.Get("SteamId") != "" ? "player" : null);
         if (c.Contains("/AI/Characters/Fish/")) return "fish";
+        // thú AI (hươu, lợn rừng, thỏ, gà, cua, dê...): /Game/TheIsle/Core/Characters/Animals/<Loài>/BP_<Loài>
+        if (c.Contains("/Characters/Animals/")) return a.Get("bIsDead") == "1" ? "corpse" : "animal";
         if (c.Contains("/PickablePieces/")) return "meat";
         return null;
     }

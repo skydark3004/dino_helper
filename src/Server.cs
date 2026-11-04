@@ -174,6 +174,14 @@ class LiveServer
         foreach (var cl in targets) SendRaw(cl, "event: layers\ndata: " + json + "\n\n");
     }
 
+    // Sự kiện một lần (không lưu cho trang mở sau), vd "zoom" = in/out từ phím tắt Ctrl+F10/F11
+    public void PushEvent(string name, string data)
+    {
+        List<SseClient> targets;
+        lock (lk) targets = new List<SseClient>(clients);
+        foreach (var cl in targets) SendRaw(cl, "event: " + name + "\ndata: " + data + "\n\n");
+    }
+
     void Send(SseClient cl, string json) { SendRaw(cl, "data: " + json + "\n\n"); }
 
     void SendRaw(SseClient cl, string text)
