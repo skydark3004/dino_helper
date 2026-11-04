@@ -7,3 +7,5 @@ output/
 # cài đặt riêng của tool (tự kiểm tra cập nhật...) và số bản (do workflow ghi vào gói)
 settings.txt
 version.txt
+
+version_yesterday/
