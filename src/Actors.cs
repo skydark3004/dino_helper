@@ -21,6 +21,7 @@ class Actor
     // phần đường đi đã dựng sẵn dạng JSON (chỉ nối thêm điểm mới)
     public StringBuilder TrackJson; public int TrackDone; public double[] TrackPrev; public string TrackCat;
     public List<double[]> Track = new List<double[]>(); // {time, x, y, z}
+    public List<double[]> ModeHist = new List<double[]>(); // {time, ReplicatedMovementMode}
     // vị trí gần nhất tại thời điểm t (null nếu chưa biết)
     public double[] PosAt(double t)
     {
@@ -465,6 +466,9 @@ partial class Replay
         a.Ver++;
         a.Last[prop] = val;
         if (!a.First.ContainsKey(prop)) a.First[prop] = val;
+        // chế độ di chuyển của Unreal (1 đi, 3 rơi/nhảy, 4 BƠI, 5 bay): server chỉ gửi khi đổi -> lưu lịch sử cho bản đồ
+        int mm;
+        if (prop == "ReplicatedMovementMode" && int.TryParse(val, NumberStyles.Integer, IC, out mm)) a.ModeHist.Add(new double[] { CurTime, mm });
         if (prop == "ReplicatedMovement" || prop == "Move" || prop == "Spawn")
         {
             string[] p = val.Split(';');

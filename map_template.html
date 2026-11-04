@@ -35,6 +35,9 @@
   canvas.pick { cursor: crosshair; }
   #tip { position: absolute; pointer-events: none; background: rgba(20,22,17,.95); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; display: none; white-space: nowrap; font-size: 12px; }
   #tip b { color: var(--accent); }
+  #tip .tt { display: grid; grid-template-columns: auto auto; gap: 1px 10px; margin-top: 4px; }
+  #tip .tl { color: var(--muted); }
+  #tip .tn { color: var(--muted); font-size: 11px; margin-top: 3px; }
   #hint { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); background: var(--accent); color: #1a1a1a; padding: 6px 12px; border-radius: 6px; font-weight: 600; display: none; }
   #compass { position: absolute; top: 12px; right: 14px; text-align: center; color: var(--muted); font-weight: 700; }
   #compass .n { color: var(--player); font-size: 16px; }
@@ -548,6 +551,7 @@ function buildMapCanvases() {
     g.fillStyle = "rgba(0,0,0,0.25)"; g.fillRect(0, 0, n, n);
   });
   gw.overview = makeCanvas(OVERVIEW_PX, (g, n) => g.drawImage(gw.detail, 0, 0, n, n));
+  buildWaterMask(gw.imgs[1]); // trước khi bỏ ảnh gốc
   gw.ready = true; gw.imgErr = false;
   for (const im of gw.imgs) { im.onload = im.onerror = null; im.src = ""; } // giải phóng ảnh gốc (gỡ handler trước: src rỗng gây sự kiện lỗi)
   gw.imgs = [];
@@ -557,6 +561,109 @@ function buildMapCanvases() {
   perfHiddenAt = performance.now();
   draw();
 }
+// ---------- nước / địa hình tại 1 vị trí (ô thông tin khi rê chuột) ----------
+// Mặt nạ nước: kênh trong suốt của water.webp (lớp nước PVN), nửa độ phân giải (~2,9 m/điểm), 1 = nước.
+const WM_PX = 3900;
+function buildWaterMask(im) {
+  if (!im) return;
+  try {
+    const c = document.createElement("canvas"); c.width = c.height = WM_PX;
+    const g = c.getContext("2d", { willReadFrequently: true });
+    g.drawImage(im, 0, 0, WM_PX, WM_PX);
+    const d = g.getImageData(0, 0, WM_PX, WM_PX).data, m = new Uint8Array(WM_PX * WM_PX);
+    for (let i = 0, j = 3; i < m.length; i++, j += 4) m[i] = d[j] > 100 ? 1 : 0;
+    gw.water = m;
+  } catch (e) { gw.water = null; }
+}
+// toạ độ game -> (u, v) 0..1 trên ảnh bản đồ
+const gwUV = (x, y) => [(x - gwRect[0]) / (gwRect[2] - gwRect[0]), (y - gwRect[1]) / (gwRect[3] - gwRect[1])];
+const MASK_M = (gwRect[2] - gwRect[0]) / 100 / WM_PX; // mét mỗi điểm của mặt nạ nước
+function isWater(x, y) {
+  if (!gw.water) return null;
+  const [u, v] = gwUV(x, y), px = Math.floor(u * WM_PX), py = Math.floor(v * WM_PX);
+  if (px < 0 || py < 0 || px >= WM_PX || py >= WM_PX) return false;
+  return gw.water[py * WM_PX + px] === 1;
+}
+// chỗ nước gần nhất (tìm theo vòng vuông nở dần, tối đa maxM mét) -> {d: mét, x, y} hoặc null
+function nearestWater(x, y, maxM) {
+  if (!gw.water) return null;
+  const [u, v] = gwUV(x, y), cx = Math.floor(u * WM_PX), cy = Math.floor(v * WM_PX), R = Math.ceil(maxM / MASK_M);
+  let best = null, bd = Infinity;
+  for (let r = 1; r <= R; r++) {
+    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue; // chỉ viền vòng r
+      const px = cx + dx, py = cy + dy;
+      if (px < 0 || py < 0 || px >= WM_PX || py >= WM_PX || !gw.water[py * WM_PX + px]) continue;
+      const dd = Math.hypot(dx, dy); if (dd < bd) { bd = dd; best = [px, py]; }
+    }
+    if (best && bd <= r) break; // điểm ở vòng sau chắc chắn xa hơn
+  }
+  if (!best) return null;
+  return { d: Math.round(bd * MASK_M), x: gwRect[0] + (best[0] + 0.5) / WM_PX * (gwRect[2] - gwRect[0]), y: gwRect[1] + (best[1] + 0.5) / WM_PX * (gwRect[3] - gwRect[1]) };
+}
+// Địa hình quanh vị trí (bán kính ~10 m), ƯỚC LƯỢNG từ màu ảnh nền (ảnh chụp từ trên xuống):
+// tán cây + bóng (sáng/tối xen kẽ, tối) = cây rậm; sáng + ít xanh = đá/cát/đất; còn lại = trống (cỏ, bụi thấp).
+// Không biết được bụi cây thấp dưới tán / chỗ nấp – replay không có thông tin này.
+const terrainCache = new Map();
+function terrainAt(x, y) {
+  if (!gw.ready || !gw.detail) return null;
+  const key = Math.round(x / 300) + "," + Math.round(y / 300); // lưu tạm theo ô 3 m
+  if (terrainCache.has(key)) return terrainCache.get(key);
+  const n = gw.detail.width, mpp = (gwRect[2] - gwRect[0]) / 100 / n; // ~2,75 m/điểm
+  const K = TERRAIN_W, [u, v] = gwUV(x, y), cx = Math.round(u * n), cy = Math.round(v * n), R = Math.max(2, Math.round(10 / mpp)), W = 2 * (R + K) + 1;
+  let d;
+  try { d = gw.detail.getContext("2d").getImageData(cx - R - K, cy - R - K, W, W).data; } catch (e) { return null; }
+  const cnt = { forest: 0, open: 0, rock: 0 }; let tot = 0;
+  for (let py = K; py < W - K; py++) for (let px = K; px < W - K; px++) {
+    if (Math.hypot(px - R - K, py - R - K) > R) continue;
+    let s = 0, s2 = 0, sg = 0;
+    for (let dy = -K; dy <= K; dy++) for (let dx = -K; dx <= K; dx++) {
+      const i = ((py + dy) * W + px + dx) * 4, r = d[i], g = d[i + 1], b = d[i + 2], L = (r + g + b) / 3;
+      s += L; s2 += L * L; sg += g - (r + b) / 2;
+    }
+    const nn = (2 * K + 1) ** 2, L = s / nn, sd = Math.sqrt(Math.max(0, s2 / nn - L * L)), gr = sg / nn;
+    // ảnh nền đã làm tối 25% (buildMapCanvases) -> ngưỡng nhân 0,75
+    if (L > 90 && gr < 9) cnt.rock++; else if (sd > TERRAIN_SD || L < 41) cnt.forest++; else cnt.open++;
+    tot++;
+  }
+  const res = tot ? { forest: Math.round(100 * cnt.forest / tot), open: Math.round(100 * cnt.open / tot), rock: Math.round(100 * cnt.rock / tot) } : null;
+  if (terrainCache.size > 500) terrainCache.clear();
+  terrainCache.set(key, res);
+  return res;
+}
+let TERRAIN_SD = 14, TERRAIN_W = 2; // ngưỡng độ sần (tán cây), bán kính cửa sổ đo (điểm ảnh)
+// chế độ di chuyển tại thời điểm time (lịch sử "mm" từ tool): 4 = bơi, 3 = rơi/nhảy
+function modeAt(a, time) {
+  if (!a.mm) return null;
+  let m = null;
+  for (const s of a.mm) { if (s[0] > time) break; m = s[1]; }
+  return m;
+}
+// Dòng "Chỗ đứng" + "Nước gần ..." cho ô thông tin -> { rows: [[nhãn, giá trị html]], note }
+// Hướng tới nước tính TỪ CHỖ CON ĐÓ đứng, theo radar (Bắc ở trên).
+function terrainWord(tr) {
+  if (!tr) return "";
+  if (tr.forest >= 70) return "trong rừng cây rậm";
+  if (tr.forest >= 35) return "rừng thưa (cây xen bãi trống)";
+  if (tr.rock >= 50) return "đá / cát, trống trải";
+  return "bãi trống (cỏ, bụi thấp)";
+}
+function placeInfo(a, p) {
+  const rows = []; let note = "";
+  const mode = modeAt(a, t), inW = isWater(p[1], p[2]);
+  if (mode === 4) rows.push(["Chỗ đứng", "💧 <b>dưới nước – đang bơi</b>"]);
+  else if (inW) rows.push(["Chỗ đứng", "💧 <b>trong nước nông / đầm lầy</b> (không bơi)"]);
+  else if (inW === false) {
+    const tw = terrainWord(terrainAt(p[1], p[2]));
+    rows.push(["Chỗ đứng", "trên cạn" + (tw ? " · <b>" + tw + "</b>*" : "")]);
+    if (tw) note = "* ước tính từ ảnh bản đồ – không biết được có đang nấp trong bụi hay không";
+    const w = nearestWater(p[1], p[2], 600);
+    rows.push([a === me ? "Nước gần bạn" : "Nước gần nó",
+      w ? `<b>${w.d} m</b>, hướng ${RADAR[Math.round(((bearing(p, [0, w.x, w.y, 0]) % 360) + 360) % 360 / 45) % 8]} (trên radar)` : "không có trong 600 m"]);
+  }
+  return { rows, note };
+}
+
 // Vẽ ảnh nền: chọn ảnh vừa đủ nét cho mức zoom, chỉ cắt đúng phần đang thấy trên màn hình
 // (x0,y0)-(x1,y1): vùng cần vẽ theo toạ độ màn hình (lớp nền có thêm lề ngoài màn hình)
 function drawGateway(x0, y0, x1, y1) {
@@ -1084,17 +1191,23 @@ function hover(e) {
   if (newHover !== hoverActor) { hoverActor = newHover; draw(); }
   if (!best) { tip.style.display = "none"; return; }
   const { a, p } = best, mp = me ? posAt(me, t) : null;
-  let html = `<b>${esc(a.p || a.n)}</b>${a.p ? " – " + esc(a.n) : ""} <span style="color:var(--muted)">(${CATS[a.c].name})</span>`;
-  if (a.g !== undefined) html += `<br>Trưởng thành ${(a.g * 100).toFixed(1)}%${a.f ? " · cái" : ""}`;
+  // dòng 1: tên · loài; dòng 2: loại, giới tính, % trưởng thành; rồi bảng nhãn | giá trị
+  const kind = a === me ? "khủng long của bạn" : ({ player: "người chơi", corpse: "xác", animal: "thú AI", fish: "cá", meat: "thịt / nội tạng", dino: "khủng long AI" })[a.c] || a.c;
+  const dinoLike = a === me || a.c === "player" || (a.c === "corpse" && !!a.p);
+  let html = `<b>${esc(a === me ? "Bạn" : a.p || viName(a.n))}</b>${a.p || a === me ? " · " + esc(a.n) : ""}`;
+  html += `<div style="color:var(--muted)">${[kind, dinoLike && a.g !== undefined ? (a.f ? "cái" : "đực") : "", a.g !== undefined ? "trưởng thành " + (a.g * 100).toFixed(0) + "%" : ""].filter(Boolean).join(" · ")}</div>`;
+  const rows = [];
   if (mp && a !== me) {
-    const g = guide(mp, me ? headingAt(me, t) : null, p);
-    html += `<br>Cách bạn <b>${g.d} m</b> · trên radar: <b>${g.radar}</b>` + (g.side ? ` · ${g.side}` : "");
-    html += `<br><span style="color:var(--muted)">Bấm để ${a.i === pinnedId ? "bỏ ghim" : "ghim chỉ đường"}</span>`;
+    rows.push(["Cách bạn", `<b>${Math.round(dist(mp, p))} m</b>`]);
   } else if (a === me) {
     const h = headingAt(me, t);
-    if (h !== null) html += `<br>Đang quay mặt về <b>${dirName(h)}</b>`;
+    if (h !== null) rows.push(["Đang nhìn về", `<b>${dirName(h)}</b>`]);
   }
-  html += `<br><span style="color:var(--muted)">X ${p[1]} · Y ${p[2]} · Z ${p[3]}</span>`;
+  let note = "";
+  if (["me", "player", "dino", "animal"].includes(a.c)) { const pi = placeInfo(a, p); rows.push(...pi.rows); note = pi.note; }
+  html += `<div class="tt">${rows.map(r => `<span class="tl">${r[0]}</span><span>${r[1]}</span>`).join("")}</div>`;
+  if (note) html += `<div class="tn">${note}</div>`;
+  html += `<div class="tn">${a !== me ? (a.i === pinnedId ? "Bấm để bỏ ghim" : "Bấm để ghim chỉ đường") + " · " : ""}X ${p[1]} · Y ${p[2]} · Z ${p[3]}</div>`;
   tip.innerHTML = html; tip.style.display = "block";
   tip.style.left = Math.min(e.offsetX + 14, cv.clientWidth - tip.offsetWidth - 6) + "px"; tip.style.top = (e.offsetY + 14) + "px";
 }

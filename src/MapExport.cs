@@ -100,6 +100,14 @@ partial class Replay
         if (a.Get("bIsFemale") == "1") sb.Append(",\"f\":1");
         sb.Append(",\"o\":").Append(a.OpenTime.ToString("0.0", IC));
         if (a.CloseTime >= 0) sb.Append(",\"e\":").Append(a.CloseTime.ToString("0.0", IC));
+        // lịch sử chế độ di chuyển [[giờ, mode],...] (4 = đang bơi) – chỉ vài mục mỗi con
+        if (a.ModeHist.Count > 0)
+        {
+            sb.Append(",\"mm\":[");
+            for (int k = 0; k < a.ModeHist.Count; k++)
+                sb.Append(k > 0 ? "," : "").AppendFormat(IC, "[{0:0.00},{1:0}]", a.ModeHist[k][0], a.ModeHist[k][1]);
+            sb.Append(']');
+        }
         sb.Append(",\"t\":[");
         // đường đi: chỉ nối thêm các điểm mới vào phần đã dựng (đường đi chỉ dài thêm, không đổi điểm cũ)
         if (a.TrackCat != cat) { a.TrackJson = new StringBuilder(); a.TrackDone = 0; a.TrackPrev = null; a.TrackCat = cat; }
