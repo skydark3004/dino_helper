@@ -469,7 +469,8 @@ function ensureGateway() {
     const im = new Image();
     im.onload = () => { gw.imgs[i] = im; if (gw.imgs.filter(Boolean).length === 3) setTimeout(buildMapCanvases, 0); };
     // lỗi tải (tool vừa tắt/khởi động lại, mạng chậm...) -> thử lại sau 2 s, không đứng mãi ở "Đang tải"
-    im.onerror = () => { gw.imgErr = true; draw(); setTimeout(() => { im.src = `${GATEWAY.dir}/${n}.webp?r=${Date.now()}`; }, 2000); };
+    // (bỏ qua khi bản đồ đã dựng xong: buildMapCanvases xoá src -> trình duyệt báo lỗi -> trước đây tải + dựng lại vô hạn, treo trang ~4 s mỗi vài giây)
+    im.onerror = () => { if (gw.ready) return; gw.imgErr = true; draw(); setTimeout(() => { if (!gw.ready) im.src = `${GATEWAY.dir}/${n}.webp?r=${Date.now()}`; }, 2000); };
     im.src = `${GATEWAY.dir}/${n}.webp`;
   });
   addToggle("Ảnh bản đồ Gateway", "#3a5a40", "", () => gw.on, v => gw.on = v, "map");
@@ -485,14 +486,15 @@ function ensureGateway() {
 const DETAIL_PX = 4096, OVERVIEW_PX = 2048;
 function makeCanvas(n, draw) { const c = document.createElement("canvas"); c.width = c.height = n; const g = c.getContext("2d"); draw(g, n); return c; }
 function buildMapCanvases() {
+  if (gw.ready) return; // chỉ dựng 1 lần
   gw.detail = makeCanvas(DETAIL_PX, (g, n) => {
     for (const im of gw.imgs) g.drawImage(im, 0, 0, n, n);
     g.fillStyle = "rgba(0,0,0,0.25)"; g.fillRect(0, 0, n, n);
   });
   gw.overview = makeCanvas(OVERVIEW_PX, (g, n) => g.drawImage(gw.detail, 0, 0, n, n));
-  for (const im of gw.imgs) im.src = ""; // giải phóng ảnh gốc
+  gw.ready = true; gw.imgErr = false;
+  for (const im of gw.imgs) { im.onload = im.onerror = null; im.src = ""; } // giải phóng ảnh gốc (gỡ handler trước: src rỗng gây sự kiện lỗi)
   gw.imgs = [];
-  gw.ready = true;
   draw();
 }
 // Vẽ ảnh nền: chọn ảnh vừa đủ nét cho mức zoom, chỉ cắt đúng phần đang thấy trên màn hình
