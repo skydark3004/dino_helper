@@ -97,9 +97,34 @@ class EdgeOverlay
             saved = r; // người dùng vừa kéo/đổi cỡ -> nhớ cho lần mở sau
             try { File.WriteAllText(PlacementFile, string.Format("{0},{1},{2},{3}", r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top)); } catch { }
         }
-        // giữ trên cùng (game borderless đôi khi được đưa lên trên khi lấy focus)
-        SetWindowPos(Hwnd, new IntPtr(-1) /*HWND_TOPMOST*/, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 /*NOSIZE|NOMOVE|NOACTIVATE*/);
+        // giữ trên cùng (game borderless đôi khi được đưa lên trên khi lấy focus). CHỈ gọi khi bị mất TOPMOST hoặc có
+        // cửa sổ khác đè lên: gọi SetWindowPos mỗi 250 ms làm Edge + DWM vẽ lại liên tục -> game/overlay bị khựng.
+        if ((GetWindowLong(Hwnd, -20 /*GWL_EXSTYLE*/) & 0x8 /*WS_EX_TOPMOST*/) == 0 || CoveredByOther(Hwnd))
+            SetWindowPos(Hwnd, new IntPtr(-1) /*HWND_TOPMOST*/, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0200 /*NOSIZE|NOMOVE|NOACTIVATE|NOOWNERZORDER*/);
     }
+
+    // Có cửa sổ hiện (không phải của tool, không bị ẩn kiểu cloaked) nằm trên overlay và chồng lên vùng của nó?
+    static bool CoveredByOther(IntPtr h)
+    {
+        RECT me;
+        if (!GetWindowRect(h, out me)) return false;
+        for (IntPtr w = GetWindow(h, 3 /*GW_HWNDPREV*/); w != IntPtr.Zero; w = GetWindow(w, 3))
+        {
+            if (!IsWindowVisible(w) || IsIconic(w)) continue;
+            uint pid; GetWindowThreadProcessId(w, out pid);
+            if (pid == myPid) continue; // ô thông báo của tool
+            int cloaked;
+            if (DwmGetWindowAttribute(w, 14 /*DWMWA_CLOAKED*/, out cloaked, 4) == 0 && cloaked != 0) continue;
+            RECT r;
+            if (!GetWindowRect(w, out r) || r.Right <= r.Left || r.Bottom <= r.Top) continue;
+            if (r.Left < me.Right && me.Left < r.Right && r.Top < me.Bottom && me.Top < r.Bottom) return true;
+        }
+        return false;
+    }
+    static readonly uint myPid = (uint)System.Diagnostics.Process.GetCurrentProcess().Id;
+    [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int val, int size);
 
     void Apply()
     {

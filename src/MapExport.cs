@@ -44,6 +44,8 @@ partial class Replay
         var sb = new StringBuilder();
         sb.Append("{\"start\":").Append(JsStr(StartTime.ToString("yyyy-MM-dd HH:mm:ss")))
           .Append(",\"length\":").Append(LengthSec.ToString("0.0", IC))
+          // thời điểm frame cuối đã đọc (dữ liệu thật sự có tới đây) -> đồng hồ trực tiếp của bản đồ không chạy vượt
+          .Append(",\"tmax\":").Append(MaxTime.ToString("0.00", IC))
           .Append(",\"file\":").Append(JsStr(Path.GetFileName(OutDir.TrimEnd('\\'))))
           .Append(",\"map\":").Append(JsStr(MapName))
           .Append(",\"live\":").Append(IsLive ? "true" : "false")
