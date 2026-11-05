@@ -185,9 +185,10 @@ static class ReplayCut
         uint newLen = (uint)(lastT - t0 + (rebase ? 0 : t0));
         Array.Copy(BitConverter.GetBytes(newLen), 0, res, lenOff, 4);
         Array.Copy(BitConverter.GetBytes(0u), 0, res, liveOff, 4);   // không còn "đang quay"
-        if (rebase)
         {
-            long ts = BitConverter.ToInt64(d, tsOff) + t0 * TimeSpan.TicksPerMillisecond;
+            long ts = BitConverter.ToInt64(d, tsOff);
+            if (rebase) ts += t0 * TimeSpan.TicksPerMillisecond;
+            ts += TsShiftTicks(file, d, lenOff, tsOff);
             Array.Copy(BitConverter.GetBytes(ts), 0, res, tsOff, 8);
         }
         // gộp chunk nhỏ (quay bằng thông số nhanh 0,125 s) thành chunk ~15 s -> xem mượt cả trên máy chưa chỉnh config
@@ -209,6 +210,23 @@ static class ReplayCut
         catch { }
         return string.Format("bắt đầu thật từ {0} (điểm lưu gần nhất, game lưu mỗi 15 giây) → {1}, dài {2}, {3:0.0} MB{4}",
             FormatTime(t0), FormatTime(t0 + newLen - (rebase ? 0 : t0)), FormatTime(newLen - (rebase ? 0 : t0)), res.Length / 1048576.0, mergeInfo);
+    }
+
+    // Lùi giờ trong header đi 30 phút như script AHK (REC_TS_SHIFT_MIN). File gốc đã lùi sẵn
+    // (file AHK đã đổi tên) thì không lùi thêm: so header với giờ thật bắt đầu = giờ sửa file - độ dài.
+    const int TsShiftMin = 30;
+    static long TsShiftTicks(string file, byte[] d, int lenOff, int tsOff)
+    {
+        try
+        {
+            long hdr = BitConverter.ToInt64(d, tsOff);
+            DateTime real = File.GetLastWriteTime(file).AddMilliseconds(-(double)BitConverter.ToUInt32(d, lenOff));
+            long shift = TimeSpan.FromMinutes(TsShiftMin).Ticks, tol = TimeSpan.FromMinutes(10).Ticks;
+            long diff = hdr - real.Ticks;
+            if (Math.Abs(diff + shift) < tol) return 0;     // đã lùi sẵn
+            return -shift;
+        }
+        catch { return 0; }
     }
 
     static void WPacked(Stream s, uint v)
