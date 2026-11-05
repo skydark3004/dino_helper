@@ -19,18 +19,24 @@ using System.Threading;
 static class PvnSign
 {
     static string key;
+    // Lúc mở tool: CHỈ đọc pvn_hmac.txt (tức thì, không dò asar/tiến trình). Việc dò nặng để cho nút "Quét khoá PVN".
     public static string HmacKey
     {
         get
         {
-            if (key == null)
-            {
-                key = FromFile() ?? FromAsar() ?? "";
-            }
+            if (key == null) key = FromFile() ?? "";
             return key;
         }
     }
     public static bool HasKey { get { return HmacKey.Length == 64; } }
+
+    // Nút "Quét khoá PVN": dò bản PVN-Overlay đã cài (app.asar) rồi lưu pvn_hmac.txt. Trả về đã có khoá chưa.
+    public static bool Scan()
+    {
+        string k = FromFile() ?? FromAsar();
+        key = k ?? "";
+        return HasKey;
+    }
 
     static string FromFile()
     {
@@ -47,14 +53,79 @@ static class PvnSign
         return null;
     }
 
-    // Đọc 1 file trong app.asar (Electron archive): header = 2 Pickle (size + JSON cây thư mục), rồi vùng data.
+    // Dò bản PVN-Overlay đã cài ở nhiều nơi (máy bạn bè cài khác chỗ / tên thư mục khác), trích khoá từ app.asar.
     static string FromAsar()
+    {
+        foreach (string asar in AsarCandidates())
+        {
+            try
+            {
+                if (!File.Exists(asar)) continue;
+                string k = ExtractAsar(asar);
+                if (k != null)
+                {
+                    // lưu lại để lần sau khỏi dò + vẫn dùng được nếu sau này gỡ PVN-Overlay (file .gitignore)
+                    try { File.WriteAllText(Path.Combine(Program.ExeDir, "pvn_hmac.txt"), k); } catch { }
+                    return k;
+                }
+            }
+            catch { }
+        }
+        return null;
+    }
+
+    // Dò lười (yield): thử đường dẫn file trước (nhanh); chỉ quét tiến trình nếu không ra (chậm ~0,8 s).
+    static IEnumerable<string> AsarCandidates()
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string[] roots =
+        {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs"),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            Environment.GetEnvironmentVariable("ProgramFiles(x86)"),
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        };
+        string[] names = { "PVN-Overlay", "pvn-isle-overlay", "isle-overlay", "IsleVN-Overlay", "PVN Overlay" };
+
+        // 1) gốc cài thường gặp × tên sản phẩm (đường dẫn cố định -> rất nhanh)
+        foreach (var r in roots)
+            if (!string.IsNullOrEmpty(r))
+                foreach (var nm in names)
+                {
+                    string p = Path.Combine(r, nm, @"resources\app.asar");
+                    if (seen.Add(p)) yield return p;
+                }
+
+        // 2) quét thư mục con có tên liên quan trong từng gốc
+        foreach (var r in roots)
+        {
+            if (string.IsNullOrEmpty(r)) continue;
+            string[] dirs; try { dirs = Directory.GetDirectories(r); } catch { continue; }
+            foreach (var d in dirs)
+            {
+                string b = Path.GetFileName(d).ToLowerInvariant();
+                if (b.IndexOf("pvn", StringComparison.Ordinal) < 0 && b.IndexOf("isle", StringComparison.Ordinal) < 0 && b.IndexOf("overlay", StringComparison.Ordinal) < 0) continue;
+                string p = Path.Combine(d, @"resources\app.asar");
+                if (seen.Add(p)) yield return p;
+            }
+        }
+
+        // 3) tiến trình overlay đang chạy (chậm nhất -> để cuối)
+        System.Diagnostics.Process[] procs; try { procs = System.Diagnostics.Process.GetProcesses(); } catch { yield break; }
+        foreach (var pr in procs)
+        {
+            string n; try { n = pr.ProcessName.ToLowerInvariant(); } catch { continue; }
+            if (n.IndexOf("overlay", StringComparison.Ordinal) < 0 && n.IndexOf("pvn", StringComparison.Ordinal) < 0 && n.IndexOf("isle", StringComparison.Ordinal) < 0) continue;
+            string p; try { p = Path.Combine(Path.GetDirectoryName(pr.MainModule.FileName), @"resources\app.asar"); } catch { continue; }
+            if (seen.Add(p)) yield return p;
+        }
+    }
+
+    // Đọc 1 file trong app.asar (Electron archive): header = 2 Pickle (size + JSON cây thư mục), rồi vùng data.
+    static string ExtractAsar(string asar)
     {
         try
         {
-            string la = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            string asar = Path.Combine(la, @"Programs\PVN-Overlay\resources\app.asar");
-            if (!File.Exists(asar)) return null;
             using (var fs = new FileStream(asar, FileMode.Open, FileAccess.Read))
             {
                 byte[] b8 = new byte[8];

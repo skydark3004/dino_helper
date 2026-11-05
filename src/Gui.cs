@@ -37,7 +37,7 @@ class MainForm : Form
     Button btnRun, btnOpenOut, btnOpenMap, btnDelete, btnLiveMap;
     string lastOut;
     TextBox txtCutFrom, txtCutTo; Button btnCut; volatile bool cutBusy;
-    TabControl tabs; TabPage tabCutPage, tabMapPage, tabUpdatePage;
+    TabControl tabs; TabPage tabCutPage, tabMapPage, tabPvnPage, tabUpdatePage;
     // tab "Cập nhật"
     Label lblVerCur, lblVerNew, lblUpdStatus; TextBox txtNotes; Button btnCheckUpd, btnDoUpd; CheckBox chkAutoUpd;
     Updater.Info latestInfo; volatile bool updBusy;
@@ -52,8 +52,39 @@ class MainForm : Form
     // chỉ số khủng long của bạn qua WebSocket của PVN Overlay (PvnLive.cs) -> cửa sổ overlay riêng (VitalsOverlay.cs)
     readonly PvnLive pvnLive = new PvnLive(); CheckBox chkPvnLive, chkVitalsOv, chkVitalsNum, chkCombat; Label lblPvnLive; int pvnLastFrames; bool pvnKickLogged;
     readonly PvnCombat pvnCombat = new PvnCombat(); // máu đối thủ khi đánh nhau (combatlog)
-    Button btnCombatRate;
+    Button btnCombatRate, btnScanKey; Label lblPvnKey;
     string CombatRateText() { return pvnCombat.PollMs == 500 ? "Nhịp gọi: 0,5 s (nhấn để về 2 s)" : "Nhịp gọi: 2 s (nhấn để xuống 0,5 s)"; }
+    // bật/tắt combat theo đã có khoá PVN chưa (combatlog cần ký HMAC)
+    void UpdateCombatEnabled()
+    {
+        bool hasKey = PvnSign.HasKey;
+        chkCombat.Enabled = hasKey; if (!hasKey) chkCombat.Checked = false;
+        btnCombatRate.Enabled = hasKey;
+        if (lblPvnKey != null)
+        {
+            lblPvnKey.ForeColor = hasKey ? Color.DarkGreen : Color.Gray;
+            lblPvnKey.Text = hasKey ? "Đã có khoá PVN → combat dùng được." : "Chưa có khoá PVN → bấm \"Quét khoá PVN\" (cần đã cài PVN Overlay trên máy này).";
+        }
+    }
+    // nút "Quét khoá PVN": dò bản PVN Overlay đã cài (luồng nền vì có thể quét tiến trình ~0,8 s), lưu pvn_hmac.txt
+    void ScanPvnKey()
+    {
+        btnScanKey.Enabled = false; string old = btnScanKey.Text; btnScanKey.Text = "Đang quét…";
+        new Thread(() =>
+        {
+            bool ok = PvnSign.Scan();
+            try
+            {
+                BeginInvoke((Action)(() =>
+                {
+                    btnScanKey.Enabled = true; btnScanKey.Text = old;
+                    UpdateCombatEnabled();
+                    log.AppendText(ok ? "Đã tìm thấy khoá PVN (combat bật được).\r\n" : "Chưa tìm thấy khoá PVN — cần đã cài PVN Overlay trên máy này.\r\n");
+                }));
+            }
+            catch { }
+        }) { IsBackground = true }.Start();
+    }
     VitalsOverlay vitalsOv;
     void UpdateVitalsWanted() { if (vitalsOv != null) vitalsOv.Wanted = chkPvnLive.Checked && chkVitalsOv.Checked; }
     // bản đồ nhiệt PVN: cookie đăng nhập (đã giải mã) + trạng thái gọi API mỗi 5 s
@@ -97,8 +128,8 @@ class MainForm : Form
         var tabRead = new TabPage("Đọc replay & bản đồ");
         tabCutPage = new TabPage("Cắt replay");
         tabMapPage = new TabPage("Bản đồ & overlay");
-        tabUpdatePage = new TabPage("Cập nhật");
-        tabs.TabPages.Add(tabRead); tabs.TabPages.Add(tabMapPage); tabs.TabPages.Add(tabCutPage); tabs.TabPages.Add(tabUpdatePage);
+        tabPvnPage = new TabPage("PVN trực tiếp");
+        tabs.TabPages.Add(tabRead); tabs.TabPages.Add(tabMapPage); tabs.TabPages.Add(tabPvnPage); tabs.TabPages.Add(tabCutPage);
         outer.Controls.Add(tabs);
 
         // tab 1: đọc replay, bản đồ, theo dõi trực tiếp, báo, overlay
@@ -153,6 +184,7 @@ class MainForm : Form
         btnTestAlert.Margin = new Padding(12, 0, 0, 0);
         row2.Controls.Add(chkAlert); row2.Controls.Add(chkAlertSound); row2.Controls.Add(btnTestAlert);
         BuildMapTab();
+        BuildPvnTab();
         vitalsOv = new VitalsOverlay(pvnLive, pvnCombat, LoadSetting, SaveSetting) { Locked = chkOverlayLock.Checked, ShowNumbers = chkVitalsNum.Checked };
         vitalsOv.SetOpacity((int)numOverlayOpacity.Value);
         UpdateVitalsWanted();
@@ -160,7 +192,6 @@ class MainForm : Form
         pvnCombat.TokenProvider = () => { string b, e; return PvnToken.Load(out b, out e); };
         pvnCombat.Enabled = () => chkPvnLive.Checked && chkCombat.Checked && pvnLive.Ok;
         if (chkPvnLive.Checked) pvnCombat.Start(PvnToken.SteamId());
-        BuildUpdateTab();
         ovTimer = new System.Windows.Forms.Timer { Interval = 250 };
         ovTimer.Tick += (s, e) => OverlayTick();
         ovTimer.Start();
@@ -841,6 +872,14 @@ class MainForm : Form
         rowAll.Controls.Add(MakeButton("Tắt tất cả", (s, e) => SetAllLayers(false)));
         lay.Controls.Add(rowAll);
         lay.Controls.Add(new Label { Text = "Áp dụng ngay cho overlay, radar web và bản đồ đang mở qua tool (http://127.0.0.1…). Trên trang bản đồ vẫn tự bật/tắt riêng được; đổi ở đây sẽ ghi đè.", AutoSize = true, MaximumSize = new Size(760, 0), ForeColor = Color.Gray, Margin = new Padding(0, 6, 0, 0) });
+        lay.Controls.Add(new Panel { Width = 1, Height = 16, Margin = Padding.Empty });
+    }
+
+    // ---------- tab "PVN trực tiếp": chỉ số của bạn, combat, bản đồ nhiệt (đều dùng tài khoản PVN) ----------
+    void BuildPvnTab()
+    {
+        var lay = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(8) };
+        tabPvnPage.Controls.Add(lay);
 
         // ---- chỉ số khủng long của bạn (WebSocket PVN Overlay) ----
         lay.Controls.Add(new Label { Text = "Chỉ số khủng long của bạn (máu, blood, thể lực, đói, khát, chảy máu, gãy xương – từ PVN, ~4 lần/giây)", AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(0, 18, 0, 4) });
@@ -860,22 +899,26 @@ class MainForm : Form
         chkVitalsNum = new CheckBox { Text = "Hiện số thật (vd Máu 31/50) thay vì %", AutoSize = true, Checked = LoadSetting("vitalsnum", "0") == "1", Margin = new Padding(0, 2, 0, 0) };
         chkVitalsNum.CheckedChanged += (s, e) => { SaveSetting("vitalsnum", chkVitalsNum.Checked ? "1" : "0"); if (vitalsOv != null) vitalsOv.ShowNumbers = chkVitalsNum.Checked; };
         lay.Controls.Add(chkVitalsNum);
-        bool hasKey = PvnSign.HasKey;
-        chkCombat = new CheckBox { Text = "Khi đánh nhau: hiện máu đối thủ (combat)" + (hasKey ? "" : " — thiếu pvn_hmac.txt"), AutoSize = true, Enabled = hasKey, Checked = hasKey && LoadSetting("vitalscombat", "1") == "1", Margin = new Padding(0, 2, 0, 0) };
+        chkCombat = new CheckBox { Text = "Khi đánh nhau: hiện máu đối thủ (combat)", AutoSize = true, Checked = LoadSetting("vitalscombat", "1") == "1", Margin = new Padding(0, 2, 0, 0) };
         chkCombat.CheckedChanged += (s, e) => SaveSetting("vitalscombat", chkCombat.Checked ? "1" : "0");
         lay.Controls.Add(chkCombat);
-        // nút đổi nhịp gọi combatlog: 2 s <-> 0,5 s (0,5 s = mượt hơn nhưng gọi server nhiều gấp 4)
+        // nút đổi nhịp gọi combatlog: 2 s <-> 0,5 s (0,5 s = mượt hơn nhưng gọi server nhiều gấp 4) + nút quét khoá PVN
         pvnCombat.PollMs = LoadSetting("combatms", "2000") == "500" ? 500 : 2000;
+        var rowCombat = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 4, 0, 0) };
         btnCombatRate = MakeButton(CombatRateText(), (s, e) =>
         {
             pvnCombat.PollMs = pvnCombat.PollMs == 500 ? 2000 : 500;
             SaveSetting("combatms", pvnCombat.PollMs.ToString());
             btnCombatRate.Text = CombatRateText();
         });
-        btnCombatRate.Enabled = hasKey; btnCombatRate.Margin = new Padding(0, 4, 0, 0);
-        lay.Controls.Add(btnCombatRate);
-        lay.Controls.Add(new Label { Text = "Combat chỉ thấy con bạn đã đánh trúng (máu lấy từ combatlog, trễ ~nhịp gọi); con chỉ đánh bạn thì biết tên nhưng không biết máu.", AutoSize = true, MaximumSize = new Size(760, 0), ForeColor = Color.Gray, Margin = new Padding(0, 2, 0, 0) });
-        lay.Controls.Add(new Label { Text = "Khoá / mở khoá chung với radar (Ctrl+F9); mở khoá để kéo, lăn chuột để đổi cỡ. Độ đậm dùng chung ô \"Độ đậm\" ở trên. Mỗi tài khoản PVN chỉ được 1 kết nối: nếu mở PVN Overlay thì tool bị đá ra và tự dừng (tắt PVN Overlay rồi tick lại ô kết nối).", AutoSize = true, MaximumSize = new Size(760, 0), ForeColor = Color.Gray, Margin = new Padding(0, 4, 0, 0) });
+        btnScanKey = MakeButton("Quét khoá PVN", (s, e) => ScanPvnKey());
+        rowCombat.Controls.Add(btnCombatRate); rowCombat.Controls.Add(btnScanKey);
+        lay.Controls.Add(rowCombat);
+        lblPvnKey = new Label { AutoSize = true, MaximumSize = new Size(760, 0), Margin = new Padding(0, 4, 0, 0) };
+        lay.Controls.Add(lblPvnKey);
+        lay.Controls.Add(new Label { Text = "Combat chỉ thấy con bạn đã đánh trúng (máu lấy từ combatlog, trễ ~nhịp gọi); con chỉ đánh bạn thì biết tên nhưng không biết máu. Cần khoá PVN: bấm \"Quét khoá PVN\" (tự tìm trong bản PVN Overlay đã cài, chỉ cần quét 1 lần).", AutoSize = true, MaximumSize = new Size(760, 0), ForeColor = Color.Gray, Margin = new Padding(0, 2, 0, 0) });
+        lay.Controls.Add(new Label { Text = "Overlay chỉ số khoá / mở khoá chung với radar (Ctrl+F9), độ đậm chung ô ở tab \"Bản đồ & overlay\". Mỗi tài khoản PVN chỉ được 1 kết nối: mở PVN Overlay thì tool bị đá ra và tự dừng (tắt PVN Overlay rồi tick lại ô kết nối).", AutoSize = true, MaximumSize = new Size(760, 0), ForeColor = Color.Gray, Margin = new Padding(0, 4, 0, 0) });
+        UpdateCombatEnabled();
 
         // ---- bản đồ nhiệt PVN ----
         lay.Controls.Add(new Label { Text = "Bản đồ nhiệt PVN (nơi đông người chơi trên server, cập nhật mỗi 5 giây)", AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(0, 18, 0, 4) });
