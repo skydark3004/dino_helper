@@ -1,6 +1,7 @@
 player=1
 ghost=1
-corpse=0
+animal=1
+corpse=1
 fish=0
 meat=1
 poi=1

@@ -47,7 +47,18 @@ class MainForm : Form
         new[] { "animal", "Thú AI (hươu, lợn, thỏ, gà, cua…)" },
         new[] { "corpse", "Xác" }, new[] { "fish", "Cá" }, new[] { "meat", "Thịt / nội tạng" },
         new[] { "poi", "Địa danh" }, new[] { "mud", "Vũng bùn" }, new[] { "gastro", "Sỏi đã nhặt (tự ghi)" },
-        new[] { "pvngastro", "Sỏi theo PVN (không chính xác)" }, new[] { "map", "Ảnh bản đồ Gateway" } };
+        new[] { "pvngastro", "Sỏi theo PVN (không chính xác)" }, new[] { "map", "Ảnh bản đồ Gateway" },
+        new[] { "heat", "Bản đồ nhiệt PVN (cần cookie, xem dưới)" } };
+    // chỉ số khủng long của bạn qua WebSocket của PVN Overlay (PvnLive.cs) -> cửa sổ overlay riêng (VitalsOverlay.cs)
+    readonly PvnLive pvnLive = new PvnLive(); CheckBox chkPvnLive, chkVitalsOv, chkVitalsNum, chkCombat; Label lblPvnLive; int pvnLastFrames; bool pvnKickLogged;
+    readonly PvnCombat pvnCombat = new PvnCombat(); // máu đối thủ khi đánh nhau (combatlog)
+    Button btnCombatRate;
+    string CombatRateText() { return pvnCombat.PollMs == 500 ? "Nhịp gọi: 0,5 s (nhấn để về 2 s)" : "Nhịp gọi: 2 s (nhấn để xuống 0,5 s)"; }
+    VitalsOverlay vitalsOv;
+    void UpdateVitalsWanted() { if (vitalsOv != null) vitalsOv.Wanted = chkPvnLive.Checked && chkVitalsOv.Checked; }
+    // bản đồ nhiệt PVN: cookie đăng nhập (đã giải mã) + trạng thái gọi API mỗi 5 s
+    string pvnToken; bool pvnAuthFail; volatile bool heatBusy; DateTime heatNext = DateTime.MinValue; bool heatPushedEmpty = true;
+    Label lblPvn; TextBox txtPvn;
     readonly Dictionary<string, CheckBox> layerChecks = new Dictionary<string, CheckBox>(); ListView cutList; Label lblCutInfo; // tab "Cắt replay" (danh sách riêng)
     // báo khủng long người chơi mới vào vùng (khi đang quay)
     CheckBox chkAlert, chkAlertSound;
@@ -142,6 +153,13 @@ class MainForm : Form
         btnTestAlert.Margin = new Padding(12, 0, 0, 0);
         row2.Controls.Add(chkAlert); row2.Controls.Add(chkAlertSound); row2.Controls.Add(btnTestAlert);
         BuildMapTab();
+        vitalsOv = new VitalsOverlay(pvnLive, pvnCombat, LoadSetting, SaveSetting) { Locked = chkOverlayLock.Checked, ShowNumbers = chkVitalsNum.Checked };
+        vitalsOv.SetOpacity((int)numOverlayOpacity.Value);
+        UpdateVitalsWanted();
+        // combat: gọi combatlog khi bật kết nối PVN + ô combat + đang nhận live (đang trong game) + có khoá HMAC
+        pvnCombat.TokenProvider = () => { string b, e; return PvnToken.Load(out b, out e); };
+        pvnCombat.Enabled = () => chkPvnLive.Checked && chkCombat.Checked && pvnLive.Ok;
+        if (chkPvnLive.Checked) pvnCombat.Start(PvnToken.SteamId());
         BuildUpdateTab();
         ovTimer = new System.Windows.Forms.Timer { Interval = 250 };
         ovTimer.Tick += (s, e) => OverlayTick();
@@ -149,7 +167,7 @@ class MainForm : Form
         // mỗi giây: tìm replay đang quay (dự phòng cho sự kiện thay đổi file của Windows) + cập nhật nếu có dữ liệu mới
         liveTimer = new System.Windows.Forms.Timer { Interval = 1000 };
         // (lần đầu đọc cài đặt log ở tick đầu tiên, sau khi ô log đã được tạo)
-        liveTimer.Tick += (s, e) => { LiveScan(); LiveTick(); RefreshPerfSetting(); PerfLog.Flush(); };
+        liveTimer.Tick += (s, e) => { LiveScan(); LiveTick(); RefreshPerfSetting(); PerfLog.Flush(); HeatTick(); PvnLiveTick(); };
         liveTimer.Start();
         // Không chỉ dựa vào FileSystemWatcher (có máy không báo / báo chậm -> bản đồ chỉ cập nhật mỗi 1 s theo liveTimer):
         // khi đang theo dõi, cứ 100 ms hỏi kích thước file qua handle đang giữ (rất rẻ), có dữ liệu mới thì đọc ngay.
@@ -242,6 +260,7 @@ class MainForm : Form
         server = new LiveServer(Program.ExeDir);
         if (!server.Start()) server = null;
         PushLayers(); // trang mở sau sẽ nhận ngay cài đặt lớp khi kết nối
+        if (chkPvnLive.Checked) pvnLive.Start();
         // cho thấy máy chủ bản đồ đang chạy ở đâu
         Text = server != null ? "Dino Replay Reader  ·  máy chủ bản đồ: http://127.0.0.1:" + server.Port : "Dino Replay Reader  ·  (không mở được máy chủ bản đồ - bản đồ sẽ mở dạng file)";
         Shown += (s, e) => { LoadList(); LiveScan(); };
@@ -593,7 +612,22 @@ class MainForm : Form
                 if (dataTimes.Count > 0)
                 {
                     double gap = (DateTime.Now - dataTimes[dataTimes.Count - 1]).TotalSeconds;
-                    if (gap > 3) PerfLog.Write("game-gap", string.Format("[game] {0:0.0} s không có dữ liệu replay mới (game lag / loading / ổ đĩa chậm?)", gap), gap);
+                    if (gap > 3)
+                    {
+                        double sv; string cs = ReplayChunkSetting(out sv);
+                        bool cfgFast = sv > 0 && sv <= 0.25;
+                        PerfLog.Write("game-gap", string.Format("[game] {0:0.0} s không có dữ liệu replay mới ({1})", gap,
+                            cfgFast ? "game lag / loading / ổ đĩa chậm?"
+                                    : "Engine.ini ChunkUploadDelayInSeconds = " + cs + " → game chỉ ghi replay theo khối ~15 s; chạy IsleReplayConfig.bat chọn 2"), gap);
+                        // Game ghi theo khối: mỗi khối tool có thể đọc qua vài lần sát nhau -> trung vị bị kéo xuống,
+                        // nên đếm thêm số lần trống dài: >= 3 lần > 5 s trong 90 s = ghi thưa thật (loading chỉ 1 lần)
+                        if (gap > 5)
+                        {
+                            bigGaps.Add(DateTime.Now);
+                            bigGaps.RemoveAll(t => (DateTime.Now - t).TotalSeconds > 90);
+                            if (bigGaps.Count >= 3) WarnSlowWrites(gap);
+                        }
+                    }
                 }
                 dataTimes.Add(DateTime.Now); if (dataTimes.Count > 21) dataTimes.RemoveAt(0);
             }
@@ -604,20 +638,24 @@ class MainForm : Form
         for (int i = 1; i < dataTimes.Count; i++) gaps.Add((dataTimes[i] - dataTimes[i - 1]).TotalSeconds);
         gaps.Sort();
         double med = gaps[gaps.Count / 2];
-        if (med > 0.6 && !slowWarned)
-        {
-            slowWarned = true;
-            double setVal;
-            string cur = ReplayChunkSetting(out setVal);
-            string fix = setVal > 0 && setVal <= 0.25
-                // đã đặt nhanh mà game vẫn ghi thưa: game chưa đọc lại cấu hình (đang mở từ trước) hoặc máy/ổ đĩa quá tải
-                ? "Engine.ini đã đặt nhanh nhưng game chưa áp dụng: tắt hẳn game rồi mở lại (nếu vẫn vậy: máy/ổ đĩa đang quá tải)."
-                : "Muốn cập nhật ~0,15 s: tắt game, chạy IsleReplayConfig.bat, chọn 2 (Nhanh), rồi mở lại game.";
-            log.AppendText(string.Format("[{0:HH:mm:ss}] ⚠ Game đang ghi replay mỗi ~{1:0.0} s (Engine.ini: ChunkUploadDelayInSeconds = {2}) → bản đồ/radar chỉ có dữ liệu mới theo nhịp này (vẫn chạy mượt nhưng trễ hơn). {3}\r\n",
-                DateTime.Now, med, cur, fix));
-            PerfLog.Write(null, string.Format("[game] ghi replay mỗi ~{0:0.00} s (Engine.ini: {1}) – {2}", med, cur, fix));
-        }
+        if (med > 0.6) WarnSlowWrites(med);
         return med;
+    }
+    readonly List<DateTime> bigGaps = new List<DateTime>();
+    // báo 1 lần mỗi lần mở tool: game ghi replay thưa + cách sửa
+    void WarnSlowWrites(double every)
+    {
+        if (slowWarned) return;
+        slowWarned = true;
+        double setVal;
+        string cur = ReplayChunkSetting(out setVal);
+        string fix = setVal > 0 && setVal <= 0.25
+            // đã đặt nhanh mà game vẫn ghi thưa: game chưa đọc lại cấu hình (đang mở từ trước) hoặc máy/ổ đĩa quá tải
+            ? "Engine.ini đã đặt nhanh nhưng game chưa áp dụng: tắt hẳn game rồi mở lại (nếu vẫn vậy: máy/ổ đĩa đang quá tải)."
+            : "Muốn cập nhật ~0,15 s: tắt game, chạy IsleReplayConfig.bat, chọn 2 (Nhanh), rồi mở lại game.";
+        log.AppendText(string.Format("[{0:HH:mm:ss}] ⚠ Game đang ghi replay mỗi ~{1:0.0} s (Engine.ini: ChunkUploadDelayInSeconds = {2}) → bản đồ/radar chỉ có dữ liệu mới theo nhịp này. {3}\r\n",
+            DateTime.Now, every, cur, fix));
+        PerfLog.Write(null, string.Format("[game] ghi replay mỗi ~{0:0.00} s (Engine.ini: {1}) – {2}", every, cur, fix));
     }
     // giá trị localReplay.ChunkUploadDelayInSeconds trong Engine.ini của game (val = -1 nếu chưa đặt / không đọc được)
     static string ReplayChunkSetting(out double val)
@@ -777,9 +815,9 @@ class MainForm : Form
         lay.Controls.Add(rowOv);
         var rowOv2 = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 4, 0, 0) };
         chkOverlayLock = new CheckBox { Text = "Khoá overlay (bấm xuyên, ẩn thanh tiêu đề) · Ctrl+F9", AutoSize = true, Checked = true, Margin = new Padding(0, 6, 0, 0) };
-        chkOverlayLock.CheckedChanged += (s, e) => { overlay.Locked = chkOverlayLock.Checked; overlay.Tick(); };
+        chkOverlayLock.CheckedChanged += (s, e) => { overlay.Locked = chkOverlayLock.Checked; overlay.Tick(); if (vitalsOv != null) vitalsOv.Locked = chkOverlayLock.Checked; };
         numOverlayOpacity = new NumericUpDown { Minimum = 20, Maximum = 100, Increment = 5, Value = 85, Width = 52, Margin = new Padding(4, 3, 0, 0) };
-        numOverlayOpacity.ValueChanged += (s, e) => { overlay.Opacity = (int)numOverlayOpacity.Value; overlay.Tick(); };
+        numOverlayOpacity.ValueChanged += (s, e) => { overlay.Opacity = (int)numOverlayOpacity.Value; overlay.Tick(); if (vitalsOv != null) vitalsOv.SetOpacity((int)numOverlayOpacity.Value); };
         rowOv2.Controls.Add(chkOverlayLock);
         rowOv2.Controls.Add(new Label { Text = "Độ đậm", AutoSize = true, Margin = new Padding(16, 7, 0, 0) });
         rowOv2.Controls.Add(numOverlayOpacity);
@@ -803,6 +841,233 @@ class MainForm : Form
         rowAll.Controls.Add(MakeButton("Tắt tất cả", (s, e) => SetAllLayers(false)));
         lay.Controls.Add(rowAll);
         lay.Controls.Add(new Label { Text = "Áp dụng ngay cho overlay, radar web và bản đồ đang mở qua tool (http://127.0.0.1…). Trên trang bản đồ vẫn tự bật/tắt riêng được; đổi ở đây sẽ ghi đè.", AutoSize = true, MaximumSize = new Size(760, 0), ForeColor = Color.Gray, Margin = new Padding(0, 6, 0, 0) });
+
+        // ---- chỉ số khủng long của bạn (WebSocket PVN Overlay) ----
+        lay.Controls.Add(new Label { Text = "Chỉ số khủng long của bạn (máu, blood, thể lực, đói, khát, chảy máu, gãy xương – từ PVN, ~4 lần/giây)", AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(0, 18, 0, 4) });
+        chkPvnLive = new CheckBox { Text = "Kết nối PVN (dùng tài khoản PVN Overlay đã đăng nhập trên máy này)", AutoSize = true, Checked = LoadSetting("pvnlive", "1") == "1", Margin = new Padding(0, 2, 0, 0) };
+        chkPvnLive.CheckedChanged += (s, e) =>
+        {
+            SaveSetting("pvnlive", chkPvnLive.Checked ? "1" : "0");
+            if (chkPvnLive.Checked) { pvnKickLogged = false; pvnLive.Start(); pvnCombat.Start(PvnToken.SteamId()); } else { pvnLive.Stop(); pvnCombat.Stop(); }
+            UpdateVitalsWanted(); PvnLiveTick();
+        };
+        lay.Controls.Add(chkPvnLive);
+        lblPvnLive = new Label { AutoSize = true, MaximumSize = new Size(760, 0), Margin = new Padding(0, 4, 0, 0) };
+        lay.Controls.Add(lblPvnLive);
+        chkVitalsOv = new CheckBox { Text = "Hiện overlay chỉ số (cửa sổ nhỏ riêng, luôn nổi trên game)", AutoSize = true, Checked = LoadSetting("vitalsov", "1") == "1", Margin = new Padding(0, 4, 0, 0) };
+        chkVitalsOv.CheckedChanged += (s, e) => { SaveSetting("vitalsov", chkVitalsOv.Checked ? "1" : "0"); UpdateVitalsWanted(); };
+        lay.Controls.Add(chkVitalsOv);
+        chkVitalsNum = new CheckBox { Text = "Hiện số thật (vd Máu 31/50) thay vì %", AutoSize = true, Checked = LoadSetting("vitalsnum", "0") == "1", Margin = new Padding(0, 2, 0, 0) };
+        chkVitalsNum.CheckedChanged += (s, e) => { SaveSetting("vitalsnum", chkVitalsNum.Checked ? "1" : "0"); if (vitalsOv != null) vitalsOv.ShowNumbers = chkVitalsNum.Checked; };
+        lay.Controls.Add(chkVitalsNum);
+        bool hasKey = PvnSign.HasKey;
+        chkCombat = new CheckBox { Text = "Khi đánh nhau: hiện máu đối thủ (combat)" + (hasKey ? "" : " — thiếu pvn_hmac.txt"), AutoSize = true, Enabled = hasKey, Checked = hasKey && LoadSetting("vitalscombat", "1") == "1", Margin = new Padding(0, 2, 0, 0) };
+        chkCombat.CheckedChanged += (s, e) => SaveSetting("vitalscombat", chkCombat.Checked ? "1" : "0");
+        lay.Controls.Add(chkCombat);
+        // nút đổi nhịp gọi combatlog: 2 s <-> 0,5 s (0,5 s = mượt hơn nhưng gọi server nhiều gấp 4)
+        pvnCombat.PollMs = LoadSetting("combatms", "2000") == "500" ? 500 : 2000;
+        btnCombatRate = MakeButton(CombatRateText(), (s, e) =>
+        {
+            pvnCombat.PollMs = pvnCombat.PollMs == 500 ? 2000 : 500;
+            SaveSetting("combatms", pvnCombat.PollMs.ToString());
+            btnCombatRate.Text = CombatRateText();
+        });
+        btnCombatRate.Enabled = hasKey; btnCombatRate.Margin = new Padding(0, 4, 0, 0);
+        lay.Controls.Add(btnCombatRate);
+        lay.Controls.Add(new Label { Text = "Combat chỉ thấy con bạn đã đánh trúng (máu lấy từ combatlog, trễ ~nhịp gọi); con chỉ đánh bạn thì biết tên nhưng không biết máu.", AutoSize = true, MaximumSize = new Size(760, 0), ForeColor = Color.Gray, Margin = new Padding(0, 2, 0, 0) });
+        lay.Controls.Add(new Label { Text = "Khoá / mở khoá chung với radar (Ctrl+F9); mở khoá để kéo, lăn chuột để đổi cỡ. Độ đậm dùng chung ô \"Độ đậm\" ở trên. Mỗi tài khoản PVN chỉ được 1 kết nối: nếu mở PVN Overlay thì tool bị đá ra và tự dừng (tắt PVN Overlay rồi tick lại ô kết nối).", AutoSize = true, MaximumSize = new Size(760, 0), ForeColor = Color.Gray, Margin = new Padding(0, 4, 0, 0) });
+
+        // ---- bản đồ nhiệt PVN ----
+        lay.Controls.Add(new Label { Text = "Bản đồ nhiệt PVN (nơi đông người chơi trên server, cập nhật mỗi 5 giây)", AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(0, 18, 0, 4) });
+        lay.Controls.Add(new Label { AutoSize = true, MaximumSize = new Size(760, 0), Margin = new Padding(0, 0, 0, 4), Text =
+            "Bước 1: Bấm \"Mở trang PVN\" và đăng nhập Steam.\r\n" +
+            "Bước 2: Nhấn F12 → tab Network → gõ heatmap vào ô Filter (chưa thấy thì F5) → nhấp phải dòng heatmap → Copy → Copy as cURL (cmd).\r\n" +
+            "Bước 3: Dán vào ô dưới (Ctrl+V) → bấm \"Trích xuất cookie\"." });
+        lay.Controls.Add(MakeButton("Mở trang PVN", (s, e) => OpenPvnPage()));
+        // nhiều dòng: lệnh cURL dài nhiều dòng (ô 1 dòng sẽ cắt mất dòng -b có cookie)
+        txtPvn = new TextBox { Width = 600, Height = 54, Multiline = true, ScrollBars = ScrollBars.Vertical, Margin = new Padding(0, 6, 0, 0) };
+        txtPvn.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter && !e.Shift) { e.SuppressKeyPress = true; ExtractPvnCookie(); } };
+        lay.Controls.Add(txtPvn);
+        var rowPvn = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 4, 0, 0) };
+        btnPvnExtract = MakeButton("Trích xuất cookie", (s, e) => ExtractPvnCookie());
+        rowPvn.Controls.Add(btnPvnExtract);
+        rowPvn.Controls.Add(MakeButton("Xoá cookie", (s, e) =>
+        {
+            if (pvnToken == null) { PvnNotify("Chưa có cookie nào để xoá.", false); return; }
+            PvnHeat.Clear(); pvnToken = null; PushHeatEmpty(); UpdatePvnStatus(null);
+            log.AppendText("Đã xoá cookie PVN.\r\n");
+        }));
+        lay.Controls.Add(rowPvn);
+        lblPvn = new Label { AutoSize = true, MaximumSize = new Size(760, 0), Margin = new Padding(0, 6, 0, 0) };
+        lay.Controls.Add(lblPvn);
+        lay.Controls.Add(new Label { Text = "Cookie dùng được khoảng 30 ngày, lưu mã hoá theo tài khoản Windows (pvn_cookie.dat). Đừng gửi cookie / đoạn cURL cho ai: ai có nó là vào được tài khoản PVN của bạn.", AutoSize = true, MaximumSize = new Size(760, 0), ForeColor = Color.Gray, Margin = new Padding(0, 4, 0, 0) });
+
+        // khoảng trống cuối: FlowLayoutPanel AutoScroll không tính Padding/Margin dưới -> dòng cuối bị che khi cuộn hết
+        lay.Controls.Add(new Panel { Width = 1, Height = 24, Margin = Padding.Empty });
+
+        pvnToken = PvnHeat.Load();
+        UpdatePvnStatus(null);
+    }
+
+    // ---------- bản đồ nhiệt PVN ----------
+    Button btnPvnExtract;
+
+    void OpenPvnPage()
+    {
+        try { Process.Start(new ProcessStartInfo(PvnHeat.PageUrl) { UseShellExecute = true }); } catch { }
+    }
+
+    // hộp thoại thân thiện (không phải [LỖI]): ok = thành công, còn lại = nhắc làm lại
+    void PvnNotify(string msg, bool ok)
+    {
+        log.AppendText("Bản đồ nhiệt PVN: " + msg.Replace("\n\n", " ").Replace("\n", " ") + "\r\n");
+        if (Environment.GetEnvironmentVariable("ISLE_TEST") == null)
+            MessageBox.Show(this, msg, ok ? "Đã lấy được cookie PVN" : "Chưa lấy được cookie PVN", MessageBoxButtons.OK, ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+    }
+
+    // Lấy cookie từ chữ trong ô (cURL cmd/bash, hoặc chỉ giá trị cookie) -> thử gọi PVN -> lưu + báo
+    void ExtractPvnCookie()
+    {
+        string input = txtPvn.Text;
+        if (input.Trim().Length == 0)
+        {
+            PvnNotify("Ô đang trống.\n\nTrên trang PVN: F12 → Network → nhấp phải dòng heatmap → Copy → Copy as cURL (cmd), rồi dán vào ô (Ctrl+V) và bấm lại \"Trích xuất cookie\".", false);
+            return;
+        }
+        string tok = PvnHeat.ExtractToken(input);
+        if (tok == null)
+        {
+            PvnNotify("Trong đoạn vừa dán không có cookie đăng nhập (islepilot_player).\n\nThử lại:\n• Kiểm tra đã đăng nhập Steam trên trang PVN chưa (góc trên có tên bạn).\n• Copy đúng dòng heatmap trong tab Network, chọn \"Copy as cURL (cmd)\".", false);
+            return;
+        }
+        var info = PvnHeat.Decode(tok);
+        string who = info != null && info.Name != null ? info.Name : "của bạn";
+        if (info != null && info.Expires <= DateTime.Now)
+        {
+            PvnNotify("Cookie của tài khoản " + who + " đã hết hạn (" + info.Expires.ToString("dd/MM/yyyy") + ").\n\nTải lại trang PVN (F5), đăng nhập lại rồi copy cURL mới.", false);
+            return;
+        }
+
+        // kiểm tra với PVN trước khi lưu (luồng nền, ~1 s)
+        btnPvnExtract.Enabled = false; btnPvnExtract.Text = "Đang kiểm tra…";
+        new Thread(() =>
+        {
+            string json, err; int cells;
+            var res = PvnHeat.Fetch(tok, out json, out cells, out err);
+            try
+            {
+                BeginInvoke((Action)(() =>
+                {
+                    btnPvnExtract.Enabled = true; btnPvnExtract.Text = "Trích xuất cookie";
+                    if (res == PvnHeat.Result.AuthFailed)
+                    {
+                        PvnNotify("PVN không nhận cookie này – có thể bạn đã đăng xuất, hoặc đây là cookie cũ.\n\nTải lại trang PVN (F5), đăng nhập rồi copy cURL mới.", false);
+                        return;
+                    }
+                    try { PvnHeat.Save(tok); }
+                    catch (Exception e) { PvnNotify("Không lưu được cookie vào thư mục tool: " + e.Message, false); return; }
+                    txtPvn.Text = ""; // không để cookie nằm trên màn hình
+                    pvnToken = tok; pvnAuthFail = false; heatNext = DateTime.MinValue;
+                    int days = info != null && info.Expires != DateTime.MaxValue ? (int)Math.Floor((info.Expires - DateTime.Now).TotalDays) : -1;
+                    string exp = days >= 0 ? "Cookie dùng được đến " + info.Expires.ToString("dd/MM/yyyy") + " (còn " + days + " ngày) – hết hạn thì làm lại 3 bước.\n" : "";
+                    CheckBox cb; bool layerOn = layerChecks.TryGetValue("heat", out cb) && cb.Checked;
+                    string msg;
+                    if (res == PvnHeat.Result.Ok)
+                    {
+                        server.PushHeat(json); heatPushedEmpty = false; heatNext = DateTime.Now.AddSeconds(5);
+                        UpdatePvnStatus("lần cuối " + DateTime.Now.ToString("HH:mm:ss") + ": " + cells + " vùng");
+                        msg = "Xong! Đã lấy cookie của tài khoản " + who + " (PVN đang có " + cells + " vùng đông người).\n\n" + exp +
+                              "Bản đồ nhiệt sẽ hiện trên bản đồ web và overlay radar đang mở, tự cập nhật mỗi 5 giây.";
+                    }
+                    else
+                    {
+                        UpdatePvnStatus("chưa kết nối được PVN: " + err);
+                        msg = "Đã lưu cookie của tài khoản " + who + ", nhưng lúc này chưa kết nối được PVN (" + err + ").\nTool sẽ tự thử lại.\n\n" + exp;
+                    }
+                    if (!layerOn) msg += "\n\nLưu ý: lớp \"Bản đồ nhiệt PVN\" đang tắt – tick nó trong danh sách lớp phía trên để xem.";
+                    PvnNotify(msg, true);
+                }));
+            }
+            catch { }
+        }) { IsBackground = true }.Start();
+    }
+
+    void UpdatePvnStatus(string fetchMsg)
+    {
+        if (lblPvn == null) return;
+        if (pvnToken == null) { lblPvn.ForeColor = Color.Gray; lblPvn.Text = "Chưa có cookie PVN → chưa có bản đồ nhiệt."; return; }
+        var info = PvnHeat.Decode(pvnToken);
+        string who = info != null && info.Name != null ? info.Name : "?";
+        string exp = info != null && info.Expires != DateTime.MaxValue ? " · hết hạn " + info.Expires.ToString("dd/MM/yyyy") : "";
+        bool expired = info != null && info.Expires <= DateTime.Now;
+        if (pvnAuthFail || expired)
+        {
+            lblPvn.ForeColor = Color.Firebrick;
+            lblPvn.Text = "Cookie PVN của " + who + " " + (expired ? "đã hết hạn" : "không còn dùng được") + " → lấy lại cookie (nút 1).";
+            return;
+        }
+        lblPvn.ForeColor = Color.DarkGreen;
+        lblPvn.Text = "Đã có cookie PVN: " + who + exp + (fetchMsg != null ? " · " + fetchMsg : "");
+    }
+
+    void PushHeatEmpty() { if (server != null && !heatPushedEmpty) { server.PushHeat("null"); heatPushedEmpty = true; } }
+
+    // gọi mỗi giây (liveTimer): có cookie + lớp đang bật + có trang đang mở -> gọi API mỗi 5 s (luồng nền)
+    void HeatTick()
+    {
+        if (server == null || pvnToken == null || pvnAuthFail || heatBusy) return;
+        CheckBox cb;
+        if (!layerChecks.TryGetValue("heat", out cb) || !cb.Checked || server.ClientCount == 0) return;
+        if (DateTime.Now < heatNext) return;
+        heatBusy = true; heatNext = DateTime.Now.AddSeconds(5);
+        string tok = pvnToken;
+        new Thread(() =>
+        {
+            string json, err; int cells;
+            var res = PvnHeat.Fetch(tok, out json, out cells, out err);
+            try
+            {
+                BeginInvoke((Action)(() =>
+                {
+                    heatBusy = false;
+                    if (tok != pvnToken) return; // cookie vừa đổi / bị xoá
+                    if (res == PvnHeat.Result.Ok)
+                    {
+                        server.PushHeat(json); heatPushedEmpty = false;
+                        UpdatePvnStatus("lần cuối " + DateTime.Now.ToString("HH:mm:ss") + ": " + cells + " vùng");
+                    }
+                    else if (res == PvnHeat.Result.AuthFailed)
+                    {
+                        pvnAuthFail = true; PushHeatEmpty(); UpdatePvnStatus(null);
+                        log.AppendText("Bản đồ nhiệt PVN: " + err + " → lấy lại cookie ở tab \"Bản đồ & overlay\".\r\n");
+                    }
+                    else
+                    {
+                        heatNext = DateTime.Now.AddSeconds(15); // lỗi mạng: thử lại chậm hơn
+                        UpdatePvnStatus("lỗi " + DateTime.Now.ToString("HH:mm:ss") + ": " + err);
+                    }
+                }));
+            }
+            catch { heatBusy = false; }
+        }) { IsBackground = true }.Start();
+    }
+
+    // mỗi giây (liveTimer): hiện trạng thái kết nối PVN
+    void PvnLiveTick()
+    {
+        if (lblPvnLive == null) return;
+        if (!chkPvnLive.Checked) { lblPvnLive.ForeColor = Color.Gray; lblPvnLive.Text = "Đang tắt."; return; }
+        int fr = pvnLive.Frames, rate = fr - pvnLastFrames; pvnLastFrames = fr;
+        var v = pvnLive.Last;
+        if (pvnLive.Ok && v != null && (DateTime.Now - v.At).TotalSeconds < 3)
+        {
+            string who = !v.HasDino ? "chưa có khủng long (đang ở menu?)" : v.Species + " " + Math.Round(v.Growth * 100) + " %";
+            lblPvnLive.ForeColor = Color.DarkGreen; lblPvnLive.Text = "Đang nhận: " + who + " · " + rate + " lần/s";
+            return;
+        }
+        lblPvnLive.ForeColor = pvnLive.Kicked || !pvnLive.Running ? Color.Firebrick : Color.Gray;
+        lblPvnLive.Text = pvnLive.Running || pvnLive.Kicked ? pvnLive.State : "Đã dừng.";
+        if (pvnLive.Kicked && !pvnKickLogged) { pvnKickLogged = true; log.AppendText("PVN: " + pvnLive.State + "\r\n"); }
     }
 
     // Đang quay -> bản đồ trực tiếp; không -> bản đồ của file đang chọn ở tab 1 (nếu đã trích xuất) hoặc lần trích xuất gần nhất
@@ -889,6 +1154,8 @@ class MainForm : Form
         UnregisterHotKey(Handle, HOTKEY_OVERLAY);
         UnregisterHotKey(Handle, HOTKEY_ZOOM_IN); UnregisterHotKey(Handle, HOTKEY_ZOOM_OUT);
         if (ovWanted) overlay.Close(); // overlay không còn dữ liệu khi tool tắt
+        pvnLive.Stop(); pvnCombat.Stop();
+        if (vitalsOv != null) vitalsOv.Close();
         base.OnFormClosing(e);
     }
 

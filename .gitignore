@@ -10,3 +10,7 @@ version.txt
 
 version_yesterday/
 perf_log*.txt
+
+# cookie đăng nhập PVN (mã hoá DPAPI theo tài khoản Windows) - KHÔNG đưa lên repo
+pvn_cookie.dat
+pvn_hmac.txt

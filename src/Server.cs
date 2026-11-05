@@ -106,7 +106,8 @@ class LiveServer
                 if (last != null) Send(cl, last);
                 string ly = layersJson;
                 if (ly != null) SendRaw(cl, "event: layers\ndata: " + ly + "\n\n");
-                return; // giữ kết nối mở để đẩy dữ liệu sau
+                string ht = heatJson;
+                if (ht != null) SendRaw(cl, "event: heatmap\ndata: " + ht + "\n\n");                return; // giữ kết nối mở để đẩy dữ liệu sau
             }
 
             ServeFile(s, path);
@@ -193,6 +194,19 @@ class LiveServer
         lock (lk) targets = new List<SseClient>(clients);
         foreach (var cl in targets) SendRaw(cl, "event: layers\ndata: " + json + "\n\n");
     }
+
+    // Bản đồ nhiệt PVN (JSON của API, hoặc "null" = xoá): đẩy tới mọi trang, trang mở sau nhận bản mới nhất
+    volatile string heatJson;
+    public void PushHeat(string json)
+    {
+        heatJson = json;
+        List<SseClient> targets;
+        lock (lk) targets = new List<SseClient>(clients);
+        foreach (var cl in targets) SendRaw(cl, "event: heatmap\ndata: " + json + "\n\n");
+    }
+
+    // Số trang (bản đồ / overlay) đang nối với tool – không có trang nào thì khỏi gọi API PVN
+    public int ClientCount { get { lock (lk) return clients.Count; } }
 
     // Sự kiện một lần (không lưu cho trang mở sau), vd "zoom" = in/out từ phím tắt Ctrl+F10/F11
     public void PushEvent(string name, string data)

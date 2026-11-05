@@ -192,7 +192,7 @@ function applyLayers(L) {
   const set = {
     player: v => CATS.player.on = v, animal: v => CATS.animal.on = v, corpse: v => CATS.corpse.on = v, fish: v => CATS.fish.on = v, meat: v => CATS.meat.on = v,
     ghost: v => SHOW.ghost = v, map: v => gw.on = v, poi: v => gw.poiOn = v, mud: v => gw.mudOn = v,
-    gastro: v => gw.gastroOn = v, pvngastro: v => gw.pvnGastroOn = v,
+    gastro: v => gw.gastroOn = v, pvngastro: v => gw.pvnGastroOn = v, heat: v => gw.heatOn = v,
   };
   for (const k in L) if (set[k]) { set[k](!!L[k]); if (LAYER_INPUT[k]) LAYER_INPUT[k].checked = !!L[k]; }
   draw();
@@ -381,6 +381,11 @@ if (location.protocol.startsWith("http") && window.EventSource) {
   es.onerror = () => { if (!sseDown) { sseDown = true; draw(); } };
   es.onopen = () => { if (sseDown) { sseDown = false; draw(); } };
   es.addEventListener("zoom", e => zoomStep(e.data === "in")); // phím tắt Ctrl+F10 / Ctrl+F11 của tool
+  // bản đồ nhiệt PVN (tool gọi API mỗi 5 s khi có cookie): {ok,cells:[{u,v,intensity}],radius} hoặc null = xoá
+  es.addEventListener("heatmap", e => {
+    try { const d = JSON.parse(e.data); gw.heat = d && d.ok && Array.isArray(d.cells) ? d.cells : null; } catch (err) { gw.heat = null; }
+    gw.heatVer++; if (gw.heatCnt) gw.heatCnt.textContent = gw.heat ? gw.heat.length : ""; draw();
+  });
   es.addEventListener("layers", e => { try { pendingLayers = JSON.parse(e.data); applyLayers(pendingLayers); } catch (err) {} });
 } else {
   // Mở thẳng file map.html: tự kiểm tra version.js
@@ -513,7 +518,8 @@ function findMe() {
 
 // ---------- bản đồ Gateway có sẵn ----------
 // gastroOn = sỏi tự ghi (chỗ khủng long đã nhặt sỏi, DATA.gastro); pvnGastroOn = điểm sỏi của PVN (không khớp game, mặc định tắt)
-const gw = { imgs: [], on: true, poiOn: true, mudOn: true, gastroOn: true, pvnGastroOn: false };
+const gw = { imgs: [], on: true, poiOn: true, mudOn: true, gastroOn: true, pvnGastroOn: false,
+  heatOn: true, heat: null /* [{u,v,intensity}] từ PVN qua tool */, heatVer: 0, heatCnt: null };
 const learnedGastro = () => (DATA && DATA.gastro) || [];
 // toạ độ game của mép ảnh (u=0..1, v=0..1)
 const gwX = u => GATEWAY.a.x + (u - GATEWAY.a.u) / (GATEWAY.b.u - GATEWAY.a.u) * (GATEWAY.b.x - GATEWAY.a.x);
@@ -536,6 +542,7 @@ function ensureGateway() {
   addToggle("Vũng bùn", "#b45309", GATEWAY.mud.length, () => gw.mudOn, v => gw.mudOn = v, "mud");
   gw.gastroCnt = addToggle("Sỏi đã nhặt (tự ghi)", "#e8e2cc", learnedGastro().length, () => gw.gastroOn, v => gw.gastroOn = v, "gastro");
   addToggle("Sỏi theo PVN (không chính xác)", "#7d7868", GATEWAY.gastro.length, () => gw.pvnGastroOn, v => gw.pvnGastroOn = v, "pvngastro");
+  gw.heatCnt = addToggle("Bản đồ nhiệt PVN", "#ef4444", gw.heat ? gw.heat.length : "", () => gw.heatOn, v => gw.heatOn = v, "heat");
   if (pendingLayers) applyLayers(pendingLayers); // tool gửi cài đặt trước khi các ô này được tạo
 }
 // Gộp 3 lớp ảnh gốc (mỗi lớp 7800 px, ~244 MB khi giải nén) MỘT LẦN thành 2 ảnh đã làm tối sẵn:
@@ -678,7 +685,7 @@ function drawGateway(x0, y0, x1, y1) {
 // ---------- lớp nền ----------
 // Mọi thứ ảnh hưởng tới nền, trừ vị trí tâm (tâm đổi thì chỉ dịch canvas)
 function bgKey(W, H, dpr) {
-  return [W, H, dpr, view.s, gw.on, gw.ready, gw.poiOn, gw.mudOn, gw.gastroOn, gw.pvnGastroOn, learnedGastro().length,
+  return [W, H, dpr, view.s, gw.on, gw.ready, gw.poiOn, gw.mudOn, gw.gastroOn, gw.pvnGastroOn, learnedGastro().length, gw.heatOn, gw.heatVer,
     DATA ? DATA.map : "", img ? imgName : "", calib ? calib.ax + "," + calib.bx + "," + calib.ay + "," + calib.by : "",
     img && !calib && DATA ? DATA.ver : "" /* ảnh chưa căn chỉnh phủ theo vùng dữ liệu */].join("|");
 }
@@ -713,6 +720,7 @@ function renderBg(W, H, dpr) {
       ctx.globalAlpha = calib ? 0.9 : 0.45; ctx.drawImage(img, sx0, sy0, sx1 - sx0, sy1 - sy0); ctx.globalAlpha = 1;
     } else if (gw.on && gw.ready) drawGateway(x0, y0, x1, y1);
 
+    if (gw.heatOn && gw.heat && DATA && /gateway/i.test(DATA.map)) drawHeat(x0, y0, x1, y1);
     // lưới (đơn vị Unreal: 100 = 1 m)
     if (!OVERLAY) {
       const step = niceStep();
@@ -759,6 +767,40 @@ function renderBg(W, H, dpr) {
     if (gw.pvnGastroOn && gateway) diamonds(GATEWAY.gastro, "rgba(125,120,104,0.8)", 3.5 * dpr);
     if (gw.gastroOn && DATA) diamonds(learnedGastro(), "#e8e2cc", 5 * dpr);
   } finally { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx = saved; }
+}
+
+// Bản đồ nhiệt PVN: lưới 72×72 trên ảnh (u,v = góc ô) -> đốm đỏ mờ ở tâm ô, đậm theo intensity
+const HEAT_GRID = 72;
+function drawHeat(x0, y0, x1, y1) {
+  const k = view.s * devicePixelRatio; // toScreen trả điểm ảnh thật
+  const cellW = Math.abs(gwX(1 / HEAT_GRID) - gwX(0)) * k, cellH = Math.abs(gwY(1 / HEAT_GRID) - gwY(0)) * k;
+  const dpr = devicePixelRatio;
+  const r = Math.max(16 * dpr, 0.85 * Math.max(cellW, cellH));
+  ctx.save();
+  // ít -> nhiều: vàng -> cam -> đỏ hồng (tách hẳn khỏi xanh lá / xanh nước / cát của ảnh nền)
+  const heatColor = k => k < 0.5 ? [250, 204 - 116 * (k / 0.5), 21] : [250 + 5 * ((k - 0.5) / 0.5), 88 - 58 * ((k - 0.5) / 0.5), 21 + 90 * ((k - 0.5) / 0.5)];
+  // vẽ đốm nhạt trước, đậm sau (đốm đậm nằm trên)
+  const cells = gw.heat.slice().sort((a, b) => (+a.intensity || 0) - (+b.intensity || 0));
+  for (const c of cells) {
+    const [sx, sy] = toScreen(gwX(c.u + 0.5 / HEAT_GRID), gwY(c.v + 0.5 / HEAT_GRID));
+    if (sx < x0 - r || sy < y0 - r || sx > x1 + r || sy > y1 + r) continue;
+    const k = Math.max(0, Math.min(1, +c.intensity || 0));
+    const [cr, cg, cb] = heatColor(k).map(Math.round), rgb = `${cr},${cg},${cb}`;
+    const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
+    g.addColorStop(0, `rgba(${rgb},0.85)`); g.addColorStop(0.45, `rgba(${rgb},0.6)`); g.addColorStop(0.8, `rgba(${rgb},0.25)`); g.addColorStop(1, `rgba(${rgb},0)`);
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(sx, sy, r, 0, 7); ctx.fill();
+    // vòng viền rõ nét: lót đen + vạch màu sáng
+    const rr = r * 0.62;
+    ctx.lineWidth = 3.5 * dpr; ctx.strokeStyle = "rgba(0,0,0,0.55)"; ctx.beginPath(); ctx.arc(sx, sy, rr, 0, 7); ctx.stroke();
+    ctx.lineWidth = 1.6 * dpr; ctx.strokeStyle = `rgba(${Math.min(255, cr + 30)},${Math.min(255, cg + 60)},${Math.min(255, cb + 60)},0.95)`; ctx.beginPath(); ctx.arc(sx, sy, rr, 0, 7); ctx.stroke();
+    // số intensity đúng như API (nhỏ, giữa đốm)
+    const label = String(+(+c.intensity || 0).toFixed(2));
+    ctx.font = `bold ${10 * dpr}px Segoe UI`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.lineWidth = 3 * dpr; ctx.strokeStyle = "rgba(0,0,0,0.8)"; ctx.strokeText(label, sx, sy);
+    ctx.fillStyle = "#fff"; ctx.fillText(label, sx, sy);
+  }
+  ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+  ctx.restore();
 }
 
 function addToggle(label, color, count, get, set, key) {

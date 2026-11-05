@@ -28,7 +28,7 @@ jobs:
           $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
           & $csc /nologo /optimize /nowarn:649 /target:winexe `
             /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Management.dll `
-            /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll `
+            /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll /r:System.Security.dll `
             /out:pkg\DinoHelper\DinoReplayReader.exe src\*.cs
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
