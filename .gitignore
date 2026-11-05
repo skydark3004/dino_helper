@@ -14,3 +14,7 @@ perf_log*.txt
 # cookie đăng nhập PVN (mã hoá DPAPI theo tài khoản Windows) - KHÔNG đưa lên repo
 pvn_cookie.dat
 pvn_hmac.txt
+
+# file tool tu ghi tren tung may (diem soi tu ghi, lop ban do da chon) - khong dua len repo de git pull khong bi chan
+gastro_learned.txt
+map_layers.txt

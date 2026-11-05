@@ -14,24 +14,36 @@ static class GastroStore
     static List<int[]> pts;
     static string cachedJson; static int cachedCount = -1;
 
+    // gastro_learned.txt: điểm máy này tự ghi (KHÔNG có trong repo -> git pull không bị chặn).
+    // gastro_seed.txt: điểm có sẵn đi kèm repo (chỉ đọc).
     static string FilePath { get { return Path.Combine(Program.ExeDir, "gastro_learned.txt"); } }
+    static string SeedPath { get { return Path.Combine(Program.ExeDir, "gastro_seed.txt"); } }
 
     static void Load()
     {
         if (pts != null) return;
         pts = new List<int[]>();
+        LoadFrom(SeedPath); LoadFrom(FilePath);
+    }
+    static void LoadFrom(string path)
+    {
         try
         {
-            if (!File.Exists(FilePath)) return;
-            foreach (var line in File.ReadAllLines(FilePath))
+            if (!File.Exists(path)) return;
+            foreach (var line in File.ReadAllLines(path))
             {
                 if (line.Length == 0 || line[0] == '#') continue;
                 var p = line.Split(',');
                 int x, y, z;
-                if (p.Length >= 3 && int.TryParse(p[0], out x) && int.TryParse(p[1], out y) && int.TryParse(p[2], out z)) pts.Add(new[] { x, y, z });
+                if (p.Length >= 3 && int.TryParse(p[0], out x) && int.TryParse(p[1], out y) && int.TryParse(p[2], out z) && !Near(x, y)) pts.Add(new[] { x, y, z });
             }
         }
         catch { }
+    }
+    static bool Near(double x, double y)
+    {
+        foreach (var q in pts) { double dx = q[0] - x, dy = q[1] - y; if (dx * dx + dy * dy < MergeCm * MergeCm) return true; }
+        return false;
     }
 
     // pos = "x;y;z" (cm). Trả về true nếu là chỗ mới.
@@ -46,7 +58,7 @@ static class GastroStore
         lock (lk)
         {
             Load();
-            foreach (var q in pts) { double dx = q[0] - x, dy = q[1] - y; if (dx * dx + dy * dy < MergeCm * MergeCm) return false; }
+            if (Near(x, y)) return false;
             var n = new[] { (int)Math.Round(x), (int)Math.Round(y), (int)Math.Round(z) };
             pts.Add(n);
             try
