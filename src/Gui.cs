@@ -86,6 +86,7 @@ class MainForm : Form
         }) { IsBackground = true }.Start();
     }
     VitalsOverlay vitalsOv;
+    CompassOverlay compassOv; CheckBox chkCompass; volatile bool compassOn;
     void UpdateVitalsWanted() { if (vitalsOv != null) vitalsOv.Wanted = chkPvnLive.Checked && chkVitalsOv.Checked; }
     // bản đồ nhiệt PVN: cookie đăng nhập (đã giải mã) + trạng thái gọi API mỗi 5 s
     string pvnToken; bool pvnAuthFail; volatile bool heatBusy; DateTime heatNext = DateTime.MinValue; bool heatPushedEmpty = true;
@@ -188,6 +189,9 @@ class MainForm : Form
         vitalsOv = new VitalsOverlay(pvnLive, pvnCombat, LoadSetting, SaveSetting) { Locked = chkOverlayLock.Checked, ShowNumbers = chkVitalsNum.Checked };
         vitalsOv.SetOpacity((int)numOverlayOpacity.Value);
         UpdateVitalsWanted();
+        compassOv = new CompassOverlay(LoadSetting, SaveSetting) { Locked = chkOverlayLock.Checked, Wanted = chkCompass.Checked };
+        compassOv.SetOpacity((int)numOverlayOpacity.Value);
+        compassOn = chkCompass.Checked;
         // combat: gọi combatlog khi bật kết nối PVN + ô combat + đang nhận live (đang trong game) + có khoá HMAC
         pvnCombat.TokenProvider = () => { string b, e; return PvnToken.Load(out b, out e); };
         pvnCombat.Enabled = () => chkPvnLive.Checked && chkCombat.Checked && pvnLive.Ok;
@@ -846,15 +850,19 @@ class MainForm : Form
         lay.Controls.Add(rowOv);
         var rowOv2 = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 4, 0, 0) };
         chkOverlayLock = new CheckBox { Text = "Khoá overlay (bấm xuyên, ẩn thanh tiêu đề) · Ctrl+F9", AutoSize = true, Checked = true, Margin = new Padding(0, 6, 0, 0) };
-        chkOverlayLock.CheckedChanged += (s, e) => { overlay.Locked = chkOverlayLock.Checked; overlay.Tick(); if (vitalsOv != null) vitalsOv.Locked = chkOverlayLock.Checked; };
+        chkOverlayLock.CheckedChanged += (s, e) => { overlay.Locked = chkOverlayLock.Checked; overlay.Tick(); if (vitalsOv != null) vitalsOv.Locked = chkOverlayLock.Checked; if (compassOv != null) compassOv.Locked = chkOverlayLock.Checked; };
         numOverlayOpacity = new NumericUpDown { Minimum = 20, Maximum = 100, Increment = 5, Value = 85, Width = 52, Margin = new Padding(4, 3, 0, 0) };
-        numOverlayOpacity.ValueChanged += (s, e) => { overlay.Opacity = (int)numOverlayOpacity.Value; overlay.Tick(); if (vitalsOv != null) vitalsOv.SetOpacity((int)numOverlayOpacity.Value); };
+        numOverlayOpacity.ValueChanged += (s, e) => { overlay.Opacity = (int)numOverlayOpacity.Value; overlay.Tick(); if (vitalsOv != null) vitalsOv.SetOpacity((int)numOverlayOpacity.Value); if (compassOv != null) compassOv.SetOpacity((int)numOverlayOpacity.Value); };
         rowOv2.Controls.Add(chkOverlayLock);
         rowOv2.Controls.Add(new Label { Text = "Độ đậm", AutoSize = true, Margin = new Padding(16, 7, 0, 0) });
         rowOv2.Controls.Add(numOverlayOpacity);
         rowOv2.Controls.Add(new Label { Text = "%", AutoSize = true, Margin = new Padding(2, 7, 0, 0) });
         lay.Controls.Add(rowOv2);
         lay.Controls.Add(new Label { Text = "Ctrl+F10 = phóng to, Ctrl+F11 = thu nhỏ (radar và bản đồ đang mở, không cần mở khoá). Mở khoá (Ctrl+F9) để kéo, đổi cỡ.", AutoSize = true, ForeColor = Color.Gray, Margin = new Padding(0, 4, 0, 0) });
+        chkCompass = new CheckBox { Text = "Hiện thanh la bàn (giữa phía trên màn hình, khi đang quay)", AutoSize = true, Checked = LoadSetting("compass", "1") == "1", Margin = new Padding(0, 10, 0, 0) };
+        chkCompass.CheckedChanged += (s, e) => { SaveSetting("compass", chkCompass.Checked ? "1" : "0"); compassOn = chkCompass.Checked; if (compassOv != null) compassOv.Wanted = chkCompass.Checked; };
+        lay.Controls.Add(chkCompass);
+        lay.Controls.Add(new Label { Text = "Giữa thanh = hướng camera của bạn; chấm = khủng long người chơi (đỏ < 50 m, cam < 150 m), ◀ ▶ ở mép = ngoài tầm, quay về phía đó. Quay chuột tới khi chấm vào giữa là đang nhìn thẳng con đó. Vùng sáng giữa thanh ≈ khung màn hình. Trễ theo replay ~0,2 s. Khoá / độ đậm chung với radar.", AutoSize = true, MaximumSize = new Size(760, 0), ForeColor = Color.Gray, Margin = new Padding(0, 2, 0, 0) });
 
         lay.Controls.Add(new Label { Text = "Hiện trên bản đồ / overlay", AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(0, 18, 0, 4) });
         var saved = LoadLayers();
@@ -1199,6 +1207,7 @@ class MainForm : Form
         if (ovWanted) overlay.Close(); // overlay không còn dữ liệu khi tool tắt
         pvnLive.Stop(); pvnCombat.Stop();
         if (vitalsOv != null) vitalsOv.Close();
+        if (compassOv != null) compassOv.Close();
         base.OnFormClosing(e);
     }
 
@@ -1245,7 +1254,7 @@ class MainForm : Form
         var rp = liveRp;
         new Thread(() =>
         {
-            string msg; bool stillLive = true; double len = 0; List<DinoAlert> alerts = null;
+            string msg; bool stillLive = true; double len = 0; List<DinoAlert> alerts = null; CompassData compass = null;
             var sw = Stopwatch.StartNew();
             // thời gian từng bước (ms) -> ghi perf_log.txt khi một lần cập nhật chậm
             double tLoad = 0, tParse = 0, tAlert = 0, tMap = 0, tPush = 0; bool fresh = false, report = false; long bytesNew = 0;
@@ -1263,6 +1272,7 @@ class MainForm : Form
                 stillLive = rp.IsLive; len = rp.LengthSec;
                 // chỉ báo khi game còn đang quay (dữ liệu là "bây giờ")
                 if (alertOn && stillLive) alerts = rp.CheckNewDinos(alertPresent, DateTime.Now, TimeSpan.FromSeconds(30));
+                if (compassOn && stillLive) compass = rp.CompassSnapshot(1000);
                 double m3 = sw.Elapsed.TotalMilliseconds; tAlert = m3 - m2;
                 // bản đồ: mỗi lần; báo cáo + csv: mỗi 15 giây và khi dừng quay
                 if (!stillLive || (DateTime.Now - lastFullReport).TotalSeconds >= 15) { rp.Finish(); lastFullReport = DateTime.Now; report = true; }
@@ -1291,6 +1301,7 @@ class MainForm : Form
                 else if (rp != null) rp.CloseFile(); // đã chuyển file / ngừng theo dõi trong lúc đọc -> bỏ bộ đọc này
                 if (msg != null) log.AppendText(string.Format("[{0:HH:mm:ss}] {1}: {2}\r\n", DateTime.Now, Path.GetFileName(f), msg));
                 if (alerts != null && alerts.Count > 0 && chkAlert.Checked) ShowAlerts(alerts);
+                if (compass != null && watchFile == f && compassOv != null) compassOv.SetData(compass);
                 double every = watchFile == f && rp != null && stillLive ? TrackWriteInterval(rp.MaxTime) : -1;
                 lblLive.Text = string.Format("{0} {1} · {2} · cập nhật {3:HH:mm:ss} ({4:0} ms){5}",
                     stillLive ? "● Đang quay" : "■ Đã dừng", Path.GetFileName(f), TimeSpan.FromSeconds(len).ToString(@"m\:ss"), DateTime.Now, took * 1000,
