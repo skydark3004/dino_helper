@@ -296,7 +296,7 @@ function applyLayers(L) {
   const set = {
     player: v => CATS.player.on = v, dino: v => CATS.dino.on = v, animal: v => CATS.animal.on = v, corpse: v => CATS.corpse.on = v, fish: v => CATS.fish.on = v, meat: v => CATS.meat.on = v,
     ghost: v => SHOW.ghost = v, map: v => gw.on = v, poi: v => gw.poiOn = v, mud: v => gw.mudOn = v,
-    gastro: v => gw.gastroOn = v, pvngastro: v => gw.pvnGastroOn = v, heat: v => gw.heatOn = v,
+    gastro: v => gw.gastroOn = v, pvngastro: v => gw.pvnGastroOn = v, heat: v => gw.heatOn = v, garage: v => gw.garageOn = v,
   };
   for (const k in L) if (set[k]) { set[k](!!L[k]); if (LAYER_INPUT[k]) LAYER_INPUT[k].checked = !!L[k]; }
   draw();
@@ -498,6 +498,11 @@ if (location.protocol.startsWith("http") && window.EventSource) {
     } catch (err) { FRIENDS = new Set(); FRIEND_POS = []; }
     draw();
   });
+  es.addEventListener("garage", e => { // gara PVN: mảng dinos
+    try { const arr = JSON.parse(e.data); GARAGE = Array.isArray(arr) ? arr.filter(g => g && g.parkPos && typeof g.parkPos.x === "number" && typeof g.parkPos.y === "number") : []; } catch (err) { GARAGE = []; }
+    if (gw.garageCnt) gw.garageCnt.textContent = GARAGE.length || "";
+    draw();
+  });
   es.addEventListener("layers", e => { try { pendingLayers = JSON.parse(e.data); applyLayers(pendingLayers); } catch (err) {} });
 } else {
   // Mở thẳng file map.html: tự kiểm tra version.js
@@ -628,7 +633,11 @@ function findMe() {
 // ---------- bản đồ Gateway có sẵn ----------
 // gastroOn = sỏi tự ghi (chỗ khủng long đã nhặt sỏi, DATA.gastro); pvnGastroOn = điểm sỏi của PVN (không khớp game, mặc định tắt)
 const gw = { imgs: [], on: true, poiOn: true, mudOn: true, gastroOn: true, pvnGastroOn: false,
-  heatOn: true, heat: null /* [{u,v,intensity}] từ PVN qua tool */, heatVer: 0, heatCnt: null };
+  heatOn: true, heat: null /* [{u,v,intensity}] từ PVN qua tool */, heatVer: 0, heatCnt: null,
+  garageOn: true, garageCnt: null };
+// Gara PVN: khủng long bạn đã cất (tool gọi /api/overlay/garage, gửi mảng dinos qua SSE "garage"). Điểm đánh dấu = parkPos.
+const GARAGE_HEX = "#ff9f1c";
+let GARAGE = [];
 const learnedGastro = () => (DATA && DATA.gastro) || [];
 // toạ độ game của mép ảnh (u=0..1, v=0..1)
 const gwX = u => GATEWAY.a.x + (u - GATEWAY.a.u) / (GATEWAY.b.u - GATEWAY.a.u) * (GATEWAY.b.x - GATEWAY.a.x);
@@ -652,6 +661,7 @@ function ensureGateway() {
   gw.gastroCnt = addToggle("Sỏi đã nhặt (tự ghi)", "#e8e2cc", learnedGastro().length, () => gw.gastroOn, v => gw.gastroOn = v, "gastro");
   addToggle("Sỏi theo PVN (không chính xác)", "#7d7868", GATEWAY.gastro.length, () => gw.pvnGastroOn, v => gw.pvnGastroOn = v, "pvngastro");
   gw.heatCnt = addToggle("Bản đồ nhiệt PVN", "#ef4444", gw.heat ? gw.heat.length : "", () => gw.heatOn, v => gw.heatOn = v, "heat");
+  gw.garageCnt = addToggle("Gara PVN (đã cất)", GARAGE_HEX, GARAGE.length || "", () => gw.garageOn, v => gw.garageOn = v, "garage");
   if (pendingLayers) applyLayers(pendingLayers); // tool gửi cài đặt trước khi các ô này được tạo
 }
 // Gộp 3 lớp ảnh gốc (mỗi lớp 7800 px, ~244 MB khi giải nén) MỘT LẦN thành 2 ảnh đã làm tối sẵn:
@@ -1073,6 +1083,24 @@ function render() {
 
   const myHead = me ? headingAt(me, t) : null;
 
+  // gara PVN: hình ngôi nhà màu cam + tên loài · % trưởng thành (vẽ trước, chấm khủng long đè lên)
+  if (gw.garageOn && GARAGE.length) {
+    const s = 7 * dpr;
+    ctx.font = `bold ${11 * dpr}px Segoe UI`; ctx.textAlign = "center"; ctx.lineJoin = "round";
+    for (const g of GARAGE) {
+      const [sx, sy] = toScreen(g.parkPos.x, g.parkPos.y);
+      if (sx < -40 || sy < -40 || sx > W + 40 || sy > H + 40) continue;
+      ctx.beginPath(); ctx.moveTo(sx - s, sy + s * 0.9); ctx.lineTo(sx - s, sy - s * 0.1); ctx.lineTo(sx, sy - s * 1.1);
+      ctx.lineTo(sx + s, sy - s * 0.1); ctx.lineTo(sx + s, sy + s * 0.9); ctx.closePath();
+      ctx.fillStyle = GARAGE_HEX; ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.8 * dpr; ctx.fill(); ctx.stroke();
+      ctx.fillStyle = "#3b2300"; ctx.fillRect(sx - s * 0.35, sy + s * 0.2, s * 0.7, s * 0.7); // cửa gara
+      const lb = "Gara · " + viName(g.species || g.name || "?") + (typeof g.growth === "number" ? " " + Math.round(g.growth * 100) + "%" : "");
+      ctx.lineWidth = 3 * dpr; ctx.strokeStyle = "rgba(0,0,0,0.85)"; ctx.fillStyle = GARAGE_HEX;
+      ctx.strokeText(lb, sx, sy - s * 1.1 - 4 * dpr); ctx.fillText(lb, sx, sy - s * 1.1 - 4 * dpr);
+    }
+    ctx.textAlign = "left";
+  }
+
   // chấm (vẽ lớp nhỏ trước, khủng long sau cùng)
   const order = ["meat", "fish", "animal", "corpse", "dino", "player", "me"];
   const labels = [];
@@ -1295,7 +1323,68 @@ function nearestAt(e) {
   }
   return best;
 }
+// Gara PVN: marker gần con trỏ (≤ 14 px) -> ô thông tin đầy đủ
+function garageAt(e) {
+  if (!gw.garageOn || !GARAGE.length) return null;
+  let best = null, bd = 14;
+  for (const g of GARAGE) {
+    const [sx, sy] = toScreen(g.parkPos.x, g.parkPos.y);
+    const d = Math.hypot(sx / devicePixelRatio - e.offsetX, sy / devicePixelRatio - e.offsetY - 2);
+    if (d < bd) { bd = d; best = g; }
+  }
+  return best;
+}
+// 10 nhiệm vụ Prime theo đúng thứ tự mảng steps (lấy từ /api/overlay/me → prime.quests; PVN không gửi tên trong /garage)
+const PRIME_REQUIRED = 5;
+const PRIME_QUESTS = [
+  ["Đến khu Sanctuary khi còn juvenile", "Visit a Sanctuary as a juvenile"], ["Được làm tổ (nested in)", "Get nested in"],
+  ["Ăn đủ dinh dưỡng (mỗi loại ≥ 1%)", "Get perfect diet (1% of each)"], ["Đến vùng Mass Migration", "Visit Mass Migration zone"],
+  ["Đến 2 vùng Migration", "Visit 2 Migration zones"], ["Đến 4 vùng Patrol", "Visit 4 Patrol zones"],
+  ["Không bị vô sinh (Infertile)", "Never be Infertile"], ["Không bị co cơ (Muscle spasms)", "Never get Muscle spasms"],
+  ["Nuôi con tới Subadult", "Raise children to Subadult"], ["Là Hypsi, Troodon, Beipi, Dryo hoặc Deino", "Be a Hypsi, Troodon, Beipi, Dryo or Deino"]];
+const pct = v => typeof v === "number" ? Math.round(v * 100) + "%" : "?";
+function garageTip(g, e) {
+  const mp = me ? posAt(me, t) : null;
+  let html = `<b style="color:${GARAGE_HEX}">🏠 Gara</b> · <b>${esc(viName(g.species || g.name || "?"))}</b>`;
+  const sub = [g.gender === "Male" ? "đực" : g.gender === "Female" ? "cái" : "", typeof g.growth === "number" ? "trưởng thành " + pct(g.growth) : "",
+    g.isPrimeElder ? "Prime Elder" : ""].filter(Boolean).join(" · ");
+  html += `<div style="color:var(--muted)">${esc(sub)}</div>`;
+  const rows = [];
+  if (mp) rows.push(["Cách bạn", `<b>${Math.round(Math.hypot(mp[1] - g.parkPos.x, mp[2] - g.parkPos.y) / 100)} m</b>`]);
+  if (g.parkedAt) {
+    const d = new Date(g.parkedAt), ms = Date.now() - d.getTime();
+    const ago = ms < 3600e3 ? Math.round(ms / 60e3) + " phút" : ms < 86400e3 ? (ms / 3600e3).toFixed(1) + " giờ" : (ms / 86400e3).toFixed(1) + " ngày";
+    rows.push(["Cất lúc", isNaN(d) ? esc(g.parkedAt) : `${d.toLocaleString("vi-VN")} <span style="color:var(--muted)">(${ago} trước)</span>`]);
+  }
+  rows.push(["Máu / Thể lực", `${pct(g.health)} / ${pct(g.stamina)}`]);
+  rows.push(["Đói / Khát", `${pct(g.hunger)} / ${pct(g.thirst)}`]);
+  const v = g.vitals || {};
+  if (typeof v.oxygen === "number") rows.push(["Oxy", pct(v.oxygen)]);
+  if (typeof v.carb === "number") rows.push(["Carb / Đạm / Béo", `${pct(v.carb)} / ${pct(v.protein)} / ${pct(v.lipid)}`]);
+  rows.push(["Số lần giết", String(g.kills ?? 0)]);
+  // Prime: đủ số nhiệm vụ yêu cầu (primeEligible) -> chỉ ghi chú "đã hoàn thành"; chưa đủ -> liệt kê nhiệm vụ (✔ xong / ✘ chưa)
+  const pr = v.prime, primeDone = !!pr && (g.primeEligible === true || (typeof pr.done === "number" && pr.done >= PRIME_REQUIRED));
+  if (pr && primeDone) rows.push(["Prime", `<b style="color:#6ee7a0">✔ Đã hoàn thành Prime</b> <span style="color:var(--muted)">(${pr.done}/${pr.total})</span>`]);
+  else if (pr) rows.push(["Prime", `<b>${pr.done}/${pr.total}</b> <span style="color:var(--muted)">· cần ≥ ${PRIME_REQUIRED} nhiệm vụ</span>`]);
+  if (v.elderStacks) rows.push(["Elder stacks", String(v.elderStacks)]);
+  const muts = Array.isArray(g.mutations) ? g.mutations : [];
+  rows.push(["Đột biến" + (muts.length ? ` (${muts.length})` : ""), muts.length ? muts.map(esc).join(", ") : "không"]);
+  if (g.parentMutations && g.parentMutations.length) rows.push(["Đột biến cha mẹ", g.parentMutations.map(esc).join(", ")]);
+  if (g.elderMutations && g.elderMutations.length) rows.push(["Đột biến elder", g.elderMutations.map(esc).join(", ")]);
+  html += `<div class="tt">${rows.map(r => `<span class="tl">${r[0]}</span><span>${r[1]}</span>`).join("")}</div>`;
+  if (pr && !primeDone && Array.isArray(pr.steps)) {
+    html += `<div class="tn" style="margin-top:6px"><b>Nhiệm vụ Prime</b></div><div class="tn" style="line-height:1.5">` +
+      pr.steps.map((ok, i) => `<span style="color:${ok ? "#6ee7a0" : "#ff8a80"}">${ok ? "✔" : "✘"}</span> <span style="${ok ? "color:var(--muted)" : ""}" title="${esc((PRIME_QUESTS[i] || [])[1] || "")}">${esc((PRIME_QUESTS[i] || [])[0] || "Nhiệm vụ " + (i + 1))}</span>`).join("<br>") + `</div>`;
+  }
+  if (g.palette) html += `<div style="margin-top:4px">${Object.keys(g.palette).map(k => `<span title="${esc(k)}" style="display:inline-block;width:12px;height:12px;margin-right:2px;border:1px solid #fff4;background:${esc(g.palette[k])}"></span>`).join("")}</div>`;
+  html += `<div class="tn">X ${Math.round(g.parkPos.x)} · Y ${Math.round(g.parkPos.y)} (vị trí lúc cất)</div>`;
+  tip.innerHTML = html; tip.style.display = "block";
+  tip.style.left = Math.min(e.offsetX + 14, cv.clientWidth - tip.offsetWidth - 6) + "px";
+  tip.style.top = Math.min(e.offsetY + 14, Math.max(6, cv.clientHeight - tip.offsetHeight - 6)) + "px";
+}
 function hover(e) {
+  const gg = garageAt(e);
+  if (gg) { garageTip(gg, e); return; }
   const best = nearestAt(e);
   if (!best) { tip.style.display = "none"; return; }
   const { a, p } = best, mp = me ? posAt(me, t) : null;

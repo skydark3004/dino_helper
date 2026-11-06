@@ -48,11 +48,13 @@ class MainForm : Form
         new[] { "corpse", "Xác" }, new[] { "fish", "Cá" }, new[] { "meat", "Thịt / nội tạng" },
         new[] { "poi", "Địa danh" }, new[] { "mud", "Vũng bùn" }, new[] { "gastro", "Sỏi đã nhặt (tự ghi)" },
         new[] { "pvngastro", "Sỏi theo PVN (không chính xác)" }, new[] { "map", "Ảnh bản đồ Gateway" },
-        new[] { "heat", "Bản đồ nhiệt PVN (cần cookie, xem dưới)" } };
+        new[] { "heat", "Bản đồ nhiệt PVN (cần cookie, xem dưới)" }, new[] { "garage", "Gara PVN (khủng long đã cất, cần khoá PVN)" } };
     // chỉ số khủng long của bạn qua WebSocket của PVN Overlay (PvnLive.cs) -> cửa sổ overlay riêng (VitalsOverlay.cs)
     readonly PvnLive pvnLive = new PvnLive(); CheckBox chkPvnLive, chkVitalsOv, chkVitalsNum, chkCombat; Label lblPvnLive; int pvnLastFrames; bool pvnKickLogged;
     readonly PvnCombat pvnCombat = new PvnCombat(); // máu đối thủ khi đánh nhau (combatlog)
     readonly PvnFriends pvnFriends = new PvnFriends(); // bạn bè/group từ PVN (/map) -> chấm xanh
+    readonly PvnPrime pvnPrime = new PvnPrime(); CheckBox chkPrimeQ; // nhiệm vụ Prime của khủng long đang dùng (/api/overlay/me) -> overlay chỉ số
+    readonly PvnGarage pvnGarage = new PvnGarage(); // gara PVN (dino đã cất) -> điểm đánh dấu màu riêng trên bản đồ
     Button btnScanKey; Label lblPvnKey, lblCombatRate;
     // nhịp gọi combatlog tự động: 2 s, có đòn trừ máu -> 0,5 s và đếm ngược 60 s (đòn mới đặt lại), hết 60 s -> về 2 s
     string CombatRateText()
@@ -218,6 +220,10 @@ class MainForm : Form
         pvnCombat.TokenProvider = () => { string b, e; return PvnToken.Load(out b, out e); };
         pvnCombat.Enabled = () => chkPvnLive.Checked && (chkCombat.Checked || chkFeed.Checked) && pvnLive.Ok;
         vitalsOv.FoesOn = () => chkCombat.Checked;
+        pvnPrime.TokenProvider = () => { string b, e; return PvnToken.Load(out b, out e); };
+        pvnPrime.Enabled = () => chkPvnLive.Checked && chkVitalsOv.Checked && chkPrimeQ.Checked;
+        vitalsOv.Prime = pvnPrime; vitalsOv.PrimeOn = () => chkPrimeQ.Checked;
+        if (chkPvnLive.Checked) pvnPrime.Start();
         feedOv = new CombatFeed(LoadSetting, SaveSetting) { Locked = chkOverlayLock.Checked, Wanted = chkFeed.Checked };
         feedOv.SetOpacity((int)numOverlayOpacity.Value);
         if (chkPvnLive.Checked) pvnCombat.Start(PvnToken.SteamId());
@@ -225,6 +231,11 @@ class MainForm : Form
         pvnFriends.Enabled = () => chkPvnLive.Checked;
         pvnFriends.Changed = json => { if (server != null) server.PushFriends(json); };
         if (chkPvnLive.Checked) pvnFriends.Start();
+        pvnGarage.TokenProvider = () => { string b, e; return PvnToken.Load(out b, out e); };
+        pvnGarage.Enabled = () => chkPvnLive.Checked;
+        pvnGarage.ClientCount = () => server != null ? server.ClientCount : 0;
+        pvnGarage.Changed = json => { if (server != null) server.PushGarage(json); };
+        if (chkPvnLive.Checked) pvnGarage.Start();
         ovTimer = new System.Windows.Forms.Timer { Interval = 250 };
         ovTimer.Tick += (s, e) => OverlayTick();
         ovTimer.Start();
@@ -924,7 +935,7 @@ class MainForm : Form
         chkPvnLive.CheckedChanged += (s, e) =>
         {
             SaveSetting("pvnlive", chkPvnLive.Checked ? "1" : "0");
-            if (chkPvnLive.Checked) { pvnKickLogged = false; pvnLive.Start(); pvnCombat.Start(PvnToken.SteamId()); pvnFriends.Start(); } else { pvnLive.Stop(); pvnCombat.Stop(); pvnFriends.Stop(); }
+            if (chkPvnLive.Checked) { pvnKickLogged = false; pvnLive.Start(); pvnCombat.Start(PvnToken.SteamId()); pvnFriends.Start(); pvnGarage.Start(); pvnPrime.Start(); } else { pvnLive.Stop(); pvnCombat.Stop(); pvnFriends.Stop(); pvnGarage.Stop(); pvnPrime.Stop(); }
             UpdateVitalsWanted(); PvnLiveTick();
         };
         lay.Controls.Add(chkPvnLive);
@@ -936,6 +947,9 @@ class MainForm : Form
         chkVitalsNum = new CheckBox { Text = "Hiện số thật (vd Máu 31/50) thay vì %", AutoSize = true, Checked = LoadSetting("vitalsnum", "0") == "1", Margin = new Padding(0, 2, 0, 0) };
         chkVitalsNum.CheckedChanged += (s, e) => { SaveSetting("vitalsnum", chkVitalsNum.Checked ? "1" : "0"); if (vitalsOv != null) vitalsOv.ShowNumbers = chkVitalsNum.Checked; };
         lay.Controls.Add(chkVitalsNum);
+        chkPrimeQ = new CheckBox { Text = "Hiện nhiệm vụ Prime còn thiếu (đủ rồi thì chỉ ghi \"đã hoàn thành Prime\"; cần khoá PVN)", AutoSize = true, Checked = LoadSetting("vitalsprime", "1") == "1", Margin = new Padding(0, 2, 0, 0) };
+        chkPrimeQ.CheckedChanged += (s, e) => { SaveSetting("vitalsprime", chkPrimeQ.Checked ? "1" : "0"); if (chkPrimeQ.Checked && chkPvnLive.Checked) pvnPrime.Start(); };
+        lay.Controls.Add(chkPrimeQ);
         chkCombat = new CheckBox { Text = "Khi đánh nhau: hiện máu đối thủ (combat)", AutoSize = true, Checked = LoadSetting("vitalscombat", "1") == "1", Margin = new Padding(0, 2, 0, 0) };
         chkCombat.CheckedChanged += (s, e) => SaveSetting("vitalscombat", chkCombat.Checked ? "1" : "0");
         lay.Controls.Add(chkCombat);
@@ -1287,7 +1301,7 @@ class MainForm : Form
         UnregisterHotKey(Handle, HOTKEY_OVERLAY);
         UnregisterHotKey(Handle, HOTKEY_ZOOM_IN); UnregisterHotKey(Handle, HOTKEY_ZOOM_OUT);
         if (ovWanted) overlay.Close(); // overlay không còn dữ liệu khi tool tắt
-        pvnLive.Stop(); pvnCombat.Stop(); pvnFriends.Stop();
+        pvnLive.Stop(); pvnCombat.Stop(); pvnFriends.Stop(); pvnGarage.Stop(); pvnPrime.Stop();
         if (vitalsOv != null) vitalsOv.Close();
         if (compassOv != null) compassOv.Close();
         if (feedOv != null) feedOv.Close();

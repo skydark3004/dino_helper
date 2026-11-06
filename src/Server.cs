@@ -110,6 +110,8 @@ class LiveServer
                 if (ht != null) SendRaw(cl, "event: heatmap\ndata: " + ht + "\n\n");
                 string fr = friendsJson;
                 if (fr != null) SendRaw(cl, "event: friends\ndata: " + fr + "\n\n");
+                string gj = garageJson;
+                if (gj != null) SendRaw(cl, "event: garage\ndata: " + gj + "\n\n");
                 return; // giữ kết nối mở để đẩy dữ liệu sau
             }
 
@@ -216,6 +218,16 @@ class LiveServer
         List<SseClient> targets;
         lock (lk) targets = new List<SseClient>(clients);
         foreach (var cl in targets) SendRaw(cl, "event: friends\ndata: " + json + "\n\n");
+    }
+
+    // Gara PVN (mảng JSON dinos) -> điểm đánh dấu trên bản đồ; trang mở sau nhận bản mới nhất
+    volatile string garageJson;
+    public void PushGarage(string json)
+    {
+        garageJson = json;
+        List<SseClient> targets;
+        lock (lk) targets = new List<SseClient>(clients);
+        foreach (var cl in targets) SendRaw(cl, "event: garage\ndata: " + json + "\n\n");
     }
 
     // Số trang (bản đồ / overlay) đang nối với tool – không có trang nào thì khỏi gọi API PVN

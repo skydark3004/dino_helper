@@ -126,6 +126,9 @@ class VitalsOverlay : Form
         // combat: đối thủ đang đánh nhau với bạn (đổi mỗi 2 s) -> vẽ lại khi danh sách / máu đổi
         string sig = CombatSig();
         if (sig != foeSig) { foeSig = sig; Relayout(); Invalidate(); }
+        // nhiệm vụ Prime (đổi mỗi ~10 s khi PVN trả /me mới)
+        string psig = PrimeSig();
+        if (psig != primeSig) { primeSig = psig; Relayout(); Invalidate(); }
 
         if (!Visible) Show();
         // giữ nổi trên game: chỉ gọi SetWindowPos khi mất cờ TOPMOST (gọi liên tục làm khựng)
@@ -152,6 +155,19 @@ class VitalsOverlay : Form
         foreach (var x in f) sb.Append(x.SteamId).Append(':').Append((int)x.Hp).Append(x.Killed ? "k" : "").Append('|');
         return sb.ToString();
     }
+
+    // Nhiệm vụ Prime của khủng long đang dùng (PvnPrime): chưa đủ -> liệt kê nhiệm vụ chưa xong; đủ -> chỉ ghi chú đã hoàn thành
+    public PvnPrime Prime; public Func<bool> PrimeOn;
+    string primeSig = "";
+    PrimeInfo CurPrime() { return Prime != null && (PrimeOn == null || PrimeOn()) ? Prime.Last : null; }
+    string PrimeSig()
+    {
+        var p = CurPrime(); if (p == null) return "";
+        var sb = new StringBuilder(); sb.Append(p.Done).Append('/').Append(p.Required).Append(p.Complete ? "c" : "n");
+        foreach (var q in p.Quests) sb.Append(q.Done ? '1' : '0');
+        return sb.ToString();
+    }
+    string primeHead, primeNote; readonly List<string> primeQuests = new List<string>();
 
     // ---- nội dung ----
     struct Row { public string Label, Num; public double Pct; public Color Col; public bool Warn; }
@@ -192,7 +208,7 @@ class VitalsOverlay : Form
 
     void Relayout()
     {
-        rows.Clear(); status.Clear(); header = null; footer = null;
+        rows.Clear(); status.Clear(); header = null; footer = null; primeHead = null; primeNote = null; primeQuests.Clear();
         var v = cur;
         if (v != null && !v.HasDino) header = "PVN: chưa có khủng long (đang ở menu?)";
         else if (v != null)
@@ -222,6 +238,16 @@ class VitalsOverlay : Form
             if (v.Sick) status.Add("Ốm");
             if (v.Bacteria > 0) status.Add("Vi khuẩn " + Math.Round(v.Bacteria));
         }
+        var pr = v != null && v.HasDino ? CurPrime() : null;
+        if (pr != null)
+        {
+            if (pr.Complete) primeNote = "✔ Đã hoàn thành Prime";
+            else
+            {
+                primeHead = "★ Nhiệm vụ Prime " + pr.Done + "/" + pr.Total + (pr.Required > 0 ? " (cần " + pr.Required + ")" : "");
+                foreach (var q in pr.Quests) if (!q.Done) primeQuests.Add(PvnPrime.Viet(q.Name));
+            }
+        }
         foeList = combat != null && (FoesOn == null || FoesOn()) ? combat.Foes : new CombatFoe[0];
 
         if (curStale) footer = "PVN: mất tín hiệu";
@@ -232,6 +258,8 @@ class VitalsOverlay : Form
         if (header != null) h += S(17);
         h += rows.Count * rowH;
         if (status.Count > 0) h += Measure(string.Join(" · ", status), fBold, w - 2 * pad) + S(2);
+        if (primeHead != null) h += S(8) + S(17) + primeQuests.Count * S(15);
+        else if (primeNote != null) h += S(8) + S(16);
         if (foeList.Length > 0) h += S(8) + S(17) + Math.Min(foeList.Length, 5) * (S(15) + rowH);
         if (footer != null) h += Measure(footer, fText, w - 2 * pad);
         h += pad;
@@ -273,6 +301,27 @@ class VitalsOverlay : Form
             y += S(2);
             TextRenderer.DrawText(g, s, fBold, new Rectangle(pad, y, w - 2 * pad, h), red, TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
             y += h;
+        }
+        // ---- Prime: chưa đủ -> nhiệm vụ chưa xong; đủ -> ghi chú ----
+        if (primeHead != null || primeNote != null)
+        {
+            y += S(8);
+            using (var sep = new Pen(Color.FromArgb(60, 66, 50))) g.DrawLine(sep, pad, y - S(4), w - pad, y - S(4));
+            if (primeHead != null)
+            {
+                TextRenderer.DrawText(g, primeHead, fBold, new Point(pad, y), curStale ? muted : Color.FromArgb(240, 200, 90), TextFormatFlags.NoPadding);
+                y += S(17);
+                foreach (var qn in primeQuests)
+                {
+                    TextRenderer.DrawText(g, "✘ " + qn, fText, new Rectangle(pad, y, w - 2 * pad, S(15)), curStale ? muted : red, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+                    y += S(15);
+                }
+            }
+            else
+            {
+                TextRenderer.DrawText(g, primeNote, fText, new Point(pad, y), curStale ? muted : Color.FromArgb(110, 231, 160), TextFormatFlags.NoPadding);
+                y += S(16);
+            }
         }
         // ---- combat: máu đối thủ đang đánh nhau với bạn ----
         if (foeList.Length > 0)
