@@ -44,7 +44,7 @@ class MainForm : Form
     // lớp bản đồ bật/tắt: khoá (giống map_template.html) -> tên hiển thị; lưu ở map_layers.txt cạnh exe
     static readonly string[][] LayerDefs = {
         new[] { "player", "Người chơi khác" }, new[] { "ghost", "Mất dấu (vị trí cuối khi ra khỏi tầm)" },
-        new[] { "animal", "Thú AI (hươu, lợn, thỏ, gà, cua…)" },
+        new[] { "dino", "Khủng long AI" }, new[] { "animal", "Thú AI (hươu, lợn, thỏ, gà, cua…)" },
         new[] { "corpse", "Xác" }, new[] { "fish", "Cá" }, new[] { "meat", "Thịt / nội tạng" },
         new[] { "poi", "Địa danh" }, new[] { "mud", "Vũng bùn" }, new[] { "gastro", "Sỏi đã nhặt (tự ghi)" },
         new[] { "pvngastro", "Sỏi theo PVN (không chính xác)" }, new[] { "map", "Ảnh bản đồ Gateway" },

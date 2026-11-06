@@ -130,6 +130,7 @@ const GATEWAY = {
 const CATS = {
   me:     { name: "Khủng long của bạn", color: "--you",    r: 7, on: true },
   player: { name: "Người chơi khác",    color: "--player", r: 6, on: true },
+  dino:   { name: "Khủng long AI",      color: "--dino",   r: 5.5, on: true },
   animal: { name: "Thú AI (hươu, lợn…)", color: "--animal", r: 4.5, on: true },
   corpse: { name: "Xác",                color: "--corpse", r: 5, on: true },
   fish:   { name: "Cá",                 color: "--fish",   r: 3, on: true },
@@ -158,8 +159,26 @@ const BG_MARGIN = 384; // px CSS
 let bgState = null, bgShift = "";
 const tip = document.getElementById("tip"), hint = document.getElementById("hint");
 const slider = document.getElementById("slider");
-let actors = DATA ? DATA.actors : [];
-let me = actors.find(a => a.c === "me");
+// Con chết lúc đang thấy (có "d" = giờ chết): tách thành "con sống" tới giờ chết + "xác" từ giờ chết (vị trí xác = chỗ cuối thấy)
+function splitDead(list) {
+  const out = [];
+  for (const a of list) {
+    if (a.d === undefined) { out.push(a); continue; }
+    const d = a.d;
+    const live = Object.assign({}, a, { e: a.e === undefined ? d : Math.min(a.e, d), x: 1 }); // x: không vẽ "mất dấu"
+    live.t = a.t.filter(s => s[0] <= d);
+    const last = live.t.length ? live.t[live.t.length - 1] : null;
+    const corpse = Object.assign({}, a, { c: "corpse", o: d });
+    corpse.t = a.t.filter(s => s[0] > d);
+    if (last) corpse.t.unshift([d, last[1], last[2], last[3]]);
+    delete live.d; delete corpse.d;
+    if (live.t.length) out.push(live);
+    if (corpse.t.length) out.push(corpse);
+  }
+  return out;
+}
+let actors = DATA ? (DATA.actors = splitDead(DATA.actors)) : [];
+let me =actors.find(a => a.c === "me");
 let FRIENDS = new Set(); // tên bạn bè/group PVN (chữ thường), tool gửi qua SSE "friends"
 const FRIEND_HEX = "#4cd964";
 const isFriend = a => a.c === "player" && !!a.n && FRIENDS.has(String(a.n).trim().toLowerCase());
@@ -186,7 +205,7 @@ let sseDown = false;      // mở qua http nhưng mất kết nối với tool
 // Tool gửi {khoá: true/false} (sự kiện "layers" qua SSE) -> áp dụng + cập nhật ô tick
 function applyLayers(L) {
   const set = {
-    player: v => CATS.player.on = v, animal: v => CATS.animal.on = v, corpse: v => CATS.corpse.on = v, fish: v => CATS.fish.on = v, meat: v => CATS.meat.on = v,
+    player: v => CATS.player.on = v, dino: v => CATS.dino.on = v, animal: v => CATS.animal.on = v, corpse: v => CATS.corpse.on = v, fish: v => CATS.fish.on = v, meat: v => CATS.meat.on = v,
     ghost: v => SHOW.ghost = v, map: v => gw.on = v, poi: v => gw.poiOn = v, mud: v => gw.mudOn = v,
     gastro: v => gw.gastroOn = v, pvngastro: v => gw.pvnGastroOn = v, heat: v => gw.heatOn = v,
   };
@@ -209,7 +228,7 @@ function applyData(d) {
   const first = !DATA;
   // trang /live chuyển sang replay khác (script cắt file) -> mã đối tượng khác nhau
   if (DATA && d.file !== DATA.file) { follow = true; live.tv = null; live.at = 0; }
-  DATA = d; actors = d.actors; me = actors.find(a => a.c === "me");
+  DATA = d; actors = d.actors = splitDead(d.actors); me = actors.find(a => a.c === "me");
   liveArrived(d);
   if (follow) t = d.live ? liveTime(performance.now()) : DATA.length;
   slider.value = t;
@@ -470,7 +489,7 @@ const viName = n => VI_ANIMAL[n] || n;
 // Bỏ qua nếu cùng người chơi đó đang hiện lại ở một kênh khác, hoặc kênh đóng vì chết (đã thành xác).
 const GHOST_S = 180; // mất dấu quá 3 phút -> không hiện nữa
 function ghostAt(a, time) {
-  if (!SHOW.ghost || a.e === undefined || time <= a.e || time - a.e > GHOST_S || !a.t.length) return null;
+  if (!SHOW.ghost || a.x || a.e === undefined || time <= a.e || time - a.e > GHOST_S || !a.t.length) return null;
   // cùng người chơi: đang hiện ở kênh khác, hoặc có lần mất dấu mới hơn -> chỉ giữ 1 chấm (lần gần nhất)
   if (a.p && actors.some(b => b !== a && b.p === a.p && (posAt(b, time) || (b.e !== undefined && b.e <= time && (b.e > a.e || (b.e === a.e && b.i > a.i)))))) return null;
   let last = null;
@@ -956,7 +975,7 @@ function render() {
   const myHead = me ? headingAt(me, t) : null;
 
   // chấm (vẽ lớp nhỏ trước, khủng long sau cùng)
-  const order = ["meat", "fish", "animal", "corpse", "player", "me"];
+  const order = ["meat", "fish", "animal", "corpse", "dino", "player", "me"];
   const labels = [];
   meArrow = null;
   for (const c of order) {

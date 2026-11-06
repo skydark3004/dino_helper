@@ -12,6 +12,7 @@ class Actor
     public Dictionary<uint, string> SubObjects = new Dictionary<uint, string>(); // guid -> class path
     public Dictionary<string, string> First = new Dictionary<string, string>(), Last = new Dictionary<string, string>();
     public string LastPos; public double LastPosTime;
+    public double DeadTime = -1; // giờ replay thấy bIsDead=1 lần đầu (-1 = chưa chết)
     // tăng mỗi khi có dữ liệu mới -> bản đồ chỉ dựng lại JSON của đối tượng đã thay đổi
     public int Ver; public string JsonCache;
     // JSON trong JsonCache được dựng với các giá trị này (đổi bất kỳ cái nào -> dựng lại)
@@ -466,6 +467,7 @@ partial class Replay
         a.Ver++;
         a.Last[prop] = val;
         if (!a.First.ContainsKey(prop)) a.First[prop] = val;
+        if (prop == "bIsDead" && val == "1" && a.DeadTime < 0) a.DeadTime = CurTime;
         // chế độ di chuyển của Unreal (1 đi, 3 rơi/nhảy, 4 BƠI, 5 bay): server chỉ gửi khi đổi -> lưu lịch sử cho bản đồ
         int mm;
         if (prop == "ReplicatedMovementMode" && int.TryParse(val, NumberStyles.Integer, IC, out mm)) a.ModeHist.Add(new double[] { CurTime, mm });

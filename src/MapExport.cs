@@ -15,14 +15,19 @@ partial class Replay
         // loại theo class đã tính sẵn (ClassifyNew): khủng long / cá / thú AI / thịt
         switch (a.Kind)
         {
-            case KindDino: return a.Get("bIsDead") == "1" ? "corpse" : (a.Get("SteamId") != "" ? "player" : null);
+            // khủng long: người chơi (có SteamId) hoặc AI ("dino"); chết lúc đang thấy -> giữ lớp sống, trang tự đổi thành xác
+            // từ giờ chết (trường "d"); đã chết ngay từ lúc thấy lần đầu -> xác luôn
+            case KindDino: return a.Get("bIsDead") == "1" && !DiedWhileSeen(a) ? "corpse" : (a.Get("SteamId") != "" ? "player" : "dino");
             case KindFish: return "fish";
             // thú AI (hươu, lợn rừng, thỏ, gà, cua, dê...): /Game/TheIsle/Core/Characters/Animals/<Loài>/BP_<Loài>
-            case KindAnimal: return a.Get("bIsDead") == "1" ? "corpse" : "animal";
+            case KindAnimal: return a.Get("bIsDead") == "1" && !DiedWhileSeen(a) ? "corpse" : "animal";
             case KindPickable: return "meat";
         }
         return null;
     }
+
+    // chết khi đang được theo dõi (giờ chết cách lúc xuất hiện > 0,5 s) -> trước đó là con sống
+    static bool DiedWhileSeen(Actor a) { return a.DeadTime > a.OpenTime + 0.5; }
 
     static string JsStr(string s)
     {
@@ -100,6 +105,8 @@ partial class Replay
         if (a.Get("bIsFemale") == "1") sb.Append(",\"f\":1");
         sb.Append(",\"o\":").Append(a.OpenTime.ToString("0.0", IC));
         if (a.CloseTime >= 0) sb.Append(",\"e\":").Append(a.CloseTime.ToString("0.0", IC));
+        // giờ chết (chỉ khi chết lúc đang thấy): trang tách thành "con sống" tới giờ này + "xác" từ giờ này
+        if (cat != "corpse" && DiedWhileSeen(a)) sb.Append(",\"d\":").Append(a.DeadTime.ToString("0.0", IC));
         // lịch sử chế độ di chuyển [[giờ, mode],...] (4 = đang bơi) – chỉ vài mục mỗi con
         if (a.ModeHist.Count > 0)
         {
