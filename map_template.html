@@ -198,7 +198,63 @@ function pvnFriendActors(time) {
   }
   return out;
 }
-const dotHex = a => isFriend(a) ? FRIEND_HEX : CATS[a.c].hex;
+// TEAM: tên người chơi cùng "tag" (ArB | …, [ABC] …, ABC - …, ABC_…, ABC … viết hoa) mà có >= 2 người đang hiện -> cùng 1 màu (chấm + nhãn).
+// Logic y hệt TeamColors.cs (thanh la bàn) để cùng màu. Bạn bè PVN (xanh lá) được ưu tiên hơn màu team.
+const TEAM_PALETTE = ["#4db8ff", "#b388ff", "#ff6ec7", "#00e5ff", "#7c8cff", "#e040fb", "#ffd740", "#e0e0e0"];
+const TEAM_RX = [
+  /^[\[\(\{<【「『]\s*([^\]\)\}>】」』]{1,10}?)\s*[\]\)\}>】」』]/,
+  /^([^\s|｜•·:：\/\\~\-–—_.]{1,8})\s*[|｜•·:：\/\\~\-–—_.]+\s*\S/,
+  /^([A-Z0-9]{2,5})\s+\S/,
+  /^([A-Z0-9]{2,5})[^\p{L}\p{N}\s]/u,                      // DBZ🟡 Ông Việt, UCS◉Hunter: tag viết hoa dính ký hiệu / emoji
+  /^.+?\s[|｜•·\-–—]\s*([^\s|｜•·\-–—]{1,8})$/,
+];
+// các tag ỨNG VIÊN của 1 tên (chuẩn hoá: chữ thường, bỏ ký tự lạ): tag ở đầu và/hoặc ở cuối ("ArB | Bob" -> arb; "Bob | KOF" -> bob, kof)
+function teamCandidates(name) {
+  // NFKC: chữ kiểu 𝓗𝓣 (toán học / full-width) -> HT thường, để nhận ra tag
+  let s = String(name || ""); try { s = s.normalize("NFKC"); } catch (e) {}
+  s = s.trim(); const res = [];
+  if (!s) return res;
+  for (const rx of TEAM_RX) {
+    const m = s.match(rx);
+    if (!m) continue;
+    const key = m[1].toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+    if (key.length >= 2 && !res.includes(key)) res.push(key);
+  }
+  return res;
+}
+// tên -> màu team. Mỗi tên chọn tag ứng viên có NHIỀU người dùng chung nhất (phải >= 2 người); màu theo băm của tag, trùng thì lấy màu kế tiếp còn trống
+function teamAssign(names) {
+  const uniq = [...new Set(names.filter(n => n))], cand = new Map(), cnt = new Map();
+  for (const n of uniq) { const l = teamCandidates(n); cand.set(n, l); for (const k of l) cnt.set(k, (cnt.get(k) || 0) + 1); }
+  const keys = [...cnt].filter(e => e[1] >= 2).map(e => e[0]).sort();
+  const used = new Set(), colorOfTag = new Map(), N = TEAM_PALETTE.length;
+  for (const k of keys) {
+    let h = 2166136261;
+    for (let i = 0; i < k.length; i++) h = Math.imul(h ^ k.charCodeAt(i), 16777619) >>> 0;
+    let i = h % N;
+    for (let j = 0; j < N && used.has(i); j++) i = (i + 1) % N;
+    used.add(i); colorOfTag.set(k, TEAM_PALETTE[i]);
+  }
+  const out = new Map();
+  for (const n of uniq) {
+    let best = null, bc = 1;
+    for (const k of cand.get(n)) { const v = cnt.get(k); if (v > bc) { bc = v; best = k; } }
+    if (best) out.set(n, colorOfTag.get(best));
+  }
+  return out;
+}
+let TEAMS = new Map(), teamSig = "";
+// tính lại nhóm team theo những người chơi đang hiện ở thời điểm time (gọi 1 lần mỗi lần vẽ; chỉ dựng lại khi danh sách tên đổi)
+function computeTeams(time, extra) {
+  const names = [];
+  for (const a of actors) if (a.c === "player" && a.p && posAt(a, time)) names.push(a.p);
+  for (const a of extra) if (a.p) names.push(a.p);
+  const sig = names.slice().sort().join("\n");
+  if (sig === teamSig) return;
+  teamSig = sig; TEAMS = teamAssign(names);
+}
+const teamHex = a => a.c === "player" && a.p && TEAMS.size ? (TEAMS.get(a.p) || null) : null;
+const dotHex = a => isFriend(a) ? FRIEND_HEX : (teamHex(a) || CATS[a.c].hex);
 let follow = true; // đang xem thời điểm mới nhất (kéo thanh thời gian lùi lại / bấm Phát -> false)
 let t = DATA ? DATA.length : 0, /* mặc định xem thời điểm mới nhất */ playing = false, speed = 5, view = { cx: 0, cy: 0, s: 0.002 };
 let img = null, imgName = "", calib = null, pickMode = 0, pickPts = [];
@@ -1004,7 +1060,9 @@ function render() {
   const order = ["meat", "fish", "animal", "corpse", "dino", "player", "me"];
   const labels = [];
   meArrow = null;
-  const drawList = FRIEND_POS.length ? actors.concat(pvnFriendActors(t)) : actors; // + bạn bè PVN ngoài tầm replay
+  const pvnAct = FRIEND_POS.length ? pvnFriendActors(t) : [];
+  computeTeams(t, pvnAct);
+  const drawList = pvnAct.length ? actors.concat(pvnAct) : actors; // + bạn bè PVN ngoài tầm replay
   for (const c of order) {
     if (!CATS[c] || !CATS[c].on) continue;
     ctx.fillStyle = CATS[c].hex;
@@ -1103,6 +1161,7 @@ function placeLabels(labels, dpr, mp) {
     L.w = w + BAR + 3 * dpr; L.h = (L.l2 ? 2 : 1) * LH;
     L.gap = L.x - L.sx; L.rr = Math.max(3 * dpr, L.gap - 4 * dpr); // khoảng cách chấm -> nhãn, bán kính chấm
     L.col = c === "me" ? "#ffd34d" : dotHex(a);
+    L.team = c !== "me" && !isFriend(a) && !!teamHex(a); // tên (title) cũng đổi sang màu team
     L.pri = c === "me" ? 0 : L.ghost ? 3 : 2;
   }
   labels.sort((p, q) => p.pri - q.pri);
@@ -1144,7 +1203,7 @@ function placeLabels(labels, dpr, mp) {
     const tx = onLeft ? x + w - 7 * dpr : x + 7 * dpr;
     ctx.textAlign = onLeft ? "right" : "left";
     ctx.strokeStyle = "rgba(0,0,0,0.85)"; ctx.lineWidth = 3 * dpr;
-    ctx.font = F1; ctx.fillStyle = L.c === "me" ? "#ffd34d" : "#fff";
+    ctx.font = F1; ctx.fillStyle = L.c === "me" ? "#ffd34d" : L.team ? L.col : "#fff";
     ctx.strokeText(L.l1, tx, y + 11 * dpr); ctx.fillText(L.l1, tx, y + 11 * dpr);
     if (L.l2) {
       ctx.font = F2; ctx.fillStyle = "#d8dccb";
@@ -1170,7 +1229,7 @@ function updateSide() {
     .filter(Boolean).sort((x, y) => x.g.d - y.g.d).slice(0, 8);
   const ng = gw.gastroOn ? nearestGastro(mp) : null;
   const gastroHtml = ng ? `<div><span class="sw" style="display:inline-block;background:#d9d4c3;border-radius:2px"></span> Sỏi gần nhất – <b>${guideShort(guide(mp, myHead, [0, ng.g[0], ng.g[1], mp[3]]))}</b></div>` : "";
-  el.innerHTML = gastroHtml + (list.length ? list.map(o => `<div class="near-item" data-i="${o.a.i}"><span class="sw" style="display:inline-block;background:${CATS[o.a.c].hex}"></span> ${name(o.a)} – <b>${guideShort(o.g)}</b></div>`).join("")
+  el.innerHTML = gastroHtml + (list.length ? list.map(o => `<div class="near-item" data-i="${o.a.i}"><span class="sw" style="display:inline-block;background:${dotHex(o.a)}"></span> ${name(o.a)} – <b>${guideShort(o.g)}</b></div>`).join("")
     : '<span class="info">Không có khủng long nào khác.</span>');
 }
 const fmt = s => Math.floor(s / 60) + ":" + String(Math.floor(s % 60)).padStart(2, "0");

@@ -233,6 +233,16 @@ class CompassOverlay : Form
         int labY = base_ + S(4), labH = S(15);
         var used = new List<Rectangle>();
         var tgs = d.Targets;                     // đã sắp theo khoảng cách (gần trước = ưu tiên chỗ tốt nhất)
+        // màu: bạn bè PVN = xanh lá; cùng TEAM (tên cùng tag, ≥ 2 người trong vùng) = cùng 1 màu; còn lại theo khoảng cách
+        var names = new List<string>(); foreach (var tt in tgs) names.Add(tt.Name);
+        var teams = TeamColors.Assign(names);
+        Func<CompassTarget, Color> colorOf = tt =>
+        {
+            if (PvnFriends.IsFriend(tt.Name)) return stale ? Color.FromArgb(40, 110, 50) : Color.FromArgb(80, 220, 100);
+            Color tc;
+            if (!string.IsNullOrEmpty(tt.Name) && teams.TryGetValue(tt.Name, out tc)) return stale ? Color.FromArgb(tc.R / 2 + 20, tc.G / 2 + 20, tc.B / 2 + 20) : tc;
+            return DistColor(tt.Dist);
+        };
         int offL = 0, offR = 0;
         foreach (var t in tgs) { double r0 = Rel(t.Bearing, d.View); if (Math.Abs(r0) > Half) { if (r0 < 0) offL++; else offR++; } }
 
@@ -243,7 +253,7 @@ class CompassOverlay : Form
             var t = tgs[i];
             double r = Rel(t.Bearing, d.View);
             if (Math.Abs(r) > Half) continue;
-            Color c = PvnFriends.IsFriend(t.Name) ? (stale ? Color.FromArgb(40, 110, 50) : Color.FromArgb(80, 220, 100)) : DistColor(t.Dist);
+            Color c = colorOf(t);
             int x = (int)Math.Round(cx + r * ppd), rad = S(t.Dist < 50 ? 5 : 4);
             int lvl = 0;
             for (int tryL = 0; tryL < 2; tryL++)
@@ -265,7 +275,7 @@ class CompassOverlay : Form
         {
             double r = Rel(t.Bearing, d.View);
             if ((Math.Abs(r) > Half) != (pass == 0)) continue;
-            Color c = PvnFriends.IsFriend(t.Name) ? (stale ? Color.FromArgb(40, 110, 50) : Color.FromArgb(80, 220, 100)) : DistColor(t.Dist);
+            Color c = colorOf(t);
             string nm = string.IsNullOrEmpty(t.Name) ? t.Species : t.Name;
             if (nm != null && nm.Length > 16) nm = nm.Substring(0, 15) + "…";   // tên dài chiếm chỗ → cắt bớt
             string lab = nm + " " + Math.Round(t.Dist) + "m";
