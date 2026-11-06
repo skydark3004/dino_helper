@@ -186,13 +186,30 @@ const FRIEND_HEX = "#4cd964";
 const isFriend = a => a.c === "player" && !!a.p && FRIENDS.has(String(a.p).trim().toLowerCase());
 // Bạn bè PVN đang online mà replay KHÔNG có (ngoài tầm server gửi ~500 m): vẽ tại vị trí PVN báo, chỉ khi xem trực tiếp.
 // Con nào replay đã có (cùng tên, đang hiện) thì bỏ qua để khỏi vẽ trùng.
+// Bản của replay (đang có vị trí) chỉ được tin khi khớp với vị trí PVN (<= 150 m). Lệch / không có vị trí (ra khỏi tầm,
+// kênh cũ còn "treo") -> PVN thắng, và chấm/mất dấu của replay cho người đó bị ẩn -> không bị mất marker, không trùng.
+function replayOkForFriend(a, f, time) {
+  const p = posAt(a, time);
+  return !!p && Math.hypot(p[1] - f.x, p[2] - f.y) / 100 <= 150;
+}
+function friendByName(a) {
+  if (a.c !== "player" || !a.p || a.pvn) return null;
+  const n = String(a.p).trim().toLowerCase();
+  return FRIEND_POS.find(f => f.n === n) || null;
+}
+// true = chấm replay này của bạn bè bị PVN thay thế
+function pvnOverrides(a, time) {
+  if (!FRIEND_POS.length || !DATA || !DATA.live || !follow) return false;
+  const f = friendByName(a);
+  return !!f && !replayOkForFriend(a, f, time);
+}
 function pvnFriendActors(time) {
   if (!FRIEND_POS.length || !DATA || !DATA.live || !follow) return [];
   const mp = me ? posAt(me, time) : null;
   const out = [];
   for (const f of FRIEND_POS) {
     if (!f.act) continue;
-    if (actors.some(a => a.c === "player" && a.p && String(a.p).trim().toLowerCase() === f.n && posAt(a, time))) continue;
+    if (actors.some(a => a.c === "player" && a.p && String(a.p).trim().toLowerCase() === f.n && replayOkForFriend(a, f, time))) continue;
     f.act.t[0][3] = mp ? mp[3] : 0; // PVN không có độ cao -> coi cùng độ cao với bạn (khoảng cách ngang)
     out.push(f.act);
   }
@@ -1068,6 +1085,7 @@ function render() {
     ctx.fillStyle = CATS[c].hex;
     for (const a of drawList) {
       if (a.c !== c) continue;
+      if (c === "player" && pvnOverrides(a, t)) continue; // PVN đang vẽ bạn bè này
       const p = posAt(a, t);
       if (!p) {
         // server ngừng gửi khi ở xa (~300-500 m tuỳ loài) -> giữ vị trí cuối cùng thấy được (chấm rỗng, mờ)
@@ -1162,7 +1180,7 @@ function placeLabels(labels, dpr, mp) {
     L.gap = L.x - L.sx; L.rr = Math.max(3 * dpr, L.gap - 4 * dpr); // khoảng cách chấm -> nhãn, bán kính chấm
     L.col = c === "me" ? "#ffd34d" : dotHex(a);
     L.team = c !== "me" && !isFriend(a) && !!teamHex(a); // tên (title) cũng đổi sang màu team
-    L.pri = c === "me" ? 0 : L.ghost ? 3 : 2;
+    L.pri = c === "me" ? 0 : isFriend(a) ? 1 : L.ghost ? 3 : 2; // bạn bè được xếp nhãn trước -> không bị nhãn khác đẩy đi
   }
   labels.sort((p, q) => p.pri - q.pri);
   // vật cản: mọi chấm (để nhãn không che marker của con khác) + các nhãn đã đặt
@@ -1225,7 +1243,7 @@ function updateSide() {
   const name = a => esc(a.p || viName(a.n)) + (a.c === "corpse" ? " (xác)" : "");
 
   // danh sách gần nhất
-  const list = actors.concat(pvnFriendActors(t)).filter(a => ["player", "dino", "corpse", "animal"].includes(a.c) && CATS[a.c].on).map(a => { const p = posAt(a, t); return p ? { a, g: guide(mp, myHead, p) } : null; })
+  const list = actors.filter(a => !pvnOverrides(a, t)).concat(pvnFriendActors(t)).filter(a =>["player", "dino", "corpse", "animal"].includes(a.c) && CATS[a.c].on).map(a => { const p = posAt(a, t); return p ? { a, g: guide(mp, myHead, p) } : null; })
     .filter(Boolean).sort((x, y) => x.g.d - y.g.d).slice(0, 8);
   const ng = gw.gastroOn ? nearestGastro(mp) : null;
   const gastroHtml = ng ? `<div><span class="sw" style="display:inline-block;background:#d9d4c3;border-radius:2px"></span> Sỏi gần nhất – <b>${guideShort(guide(mp, myHead, [0, ng.g[0], ng.g[1], mp[3]]))}</b></div>` : "";

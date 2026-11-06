@@ -17,7 +17,10 @@ partial class Replay
         {
             // khủng long: người chơi (có SteamId) hoặc AI ("dino"); chết lúc đang thấy -> giữ lớp sống, trang tự đổi thành xác
             // từ giờ chết (trường "d"); đã chết ngay từ lúc thấy lần đầu -> xác luôn
-            case KindDino: return a.Get("bIsDead") == "1" && !DiedWhileSeen(a) ? "corpse" : (a.Get("SteamId") != "" ? "player" : "dino");
+            case KindDino:
+                // Compsognathus không có SteamId = AI rác của game -> không đưa lên bản đồ/radar
+                if (a.Get("SteamId") == "" && (Species(a) ?? "").IndexOf("Compsognathus", StringComparison.OrdinalIgnoreCase) >= 0) return null;
+                return a.Get("bIsDead") == "1" && !DiedWhileSeen(a) ? "corpse" : (a.Get("SteamId") != "" ? "player" : "dino");
             case KindFish: return "fish";
             // thú AI (hươu, lợn rừng, thỏ, gà, cua, dê...): /Game/TheIsle/Core/Characters/Animals/<Loài>/BP_<Loài>
             case KindAnimal: return a.Get("bIsDead") == "1" && !DiedWhileSeen(a) ? "corpse" : "animal";
