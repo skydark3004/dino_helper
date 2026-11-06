@@ -11,6 +11,7 @@ using System.Windows.Forms;
 class DinoAlert
 {
     public string Title, Detail; public double ReplayTime;
+    public bool Garage; // "lấy dino ra từ gara" (ô cam + âm riêng), khác "vào vùng"
 }
 
 partial class Replay
@@ -27,9 +28,21 @@ partial class Replay
         ClassifyNew();
         foreach (var a in dinoActors) // = actor có Species(a) != null, theo thứ tự AllActors
         {
-            if (a.CloseTime >= 0) continue;
             string sid = Unq(a.Get("SteamId"));
+            // lấy dino ra từ gara: báo riêng 1 lần (kể cả khi kênh đã đóng ngay), không báo thêm "vào vùng"
+            if (a.GarageOut != null && !a.GarageAnnounced)
+            {
+                a.GarageAnnounced = true;
+                if (sid != "") lastPresent[sid] = now;
+                if (CurTime - a.GarageOut[0] > 20) continue; // sự kiện cũ (mới bật báo / mở lại tool) -> bỏ
+                if (!meFound) { me = FindMe(); owner = MakeOwner(PlayerStates()); meFound = true; }
+                res.Add(MakeGarageAlert(a, me, owner));
+                continue;
+            }
+            if (a.CloseTime >= 0) continue;
             if (sid == "" || a.Get("Controller") != "" || a.Get("bIsDead") == "1") continue;
+            // vị trí đầu tiên có thể là vị trí giả (dino mới lấy từ gara): đợi 1,6 s xem có nhảy xa không rồi mới báo
+            if (a.GarageOut == null && a.Track.Count > 0 && CurTime - a.Track[0][0] < 1.6) continue;
             DateTime last;
             bool recent = lastPresent.TryGetValue(sid, out last) && now - last <= gap;
             lastPresent[sid] = now;
@@ -40,7 +53,18 @@ partial class Replay
         return res;
     }
 
-    DinoAlert MakeAlert(Actor d, Actor me, Func<Actor, string> owner)
+    DinoAlert MakeGarageAlert(Actor d, Actor me, Func<Actor, string> owner)
+    {
+        var al = MakeAlert(d, me, owner, d.GarageOut);
+        string name = owner(d);
+        double g; bool adult = !double.TryParse(d.Get("Growth"), NumberStyles.Float, IC, out g) || g >= 0.5;
+        al.Garage = true;
+        al.Title = "🏠 " + (name != "" ? name : "Người chơi") + (adult ? " lấy dino ra từ gara" : " xuất hiện mới (hồi sinh)");
+        al.Detail = Species(d) + " · " + al.Detail + string.Format(IC, " · tại X {0:0} Y {1:0}", d.GarageOut[1], d.GarageOut[2]);
+        return al;
+    }
+
+    DinoAlert MakeAlert(Actor d, Actor me, Func<Actor, string> owner, double[] posOverride = null)
     {
         string name = owner(d);
         string gender = d.Get("bIsFemale") == "1" ? "cái" : "đực";
@@ -49,9 +73,9 @@ partial class Replay
         al.Title = Species(d) + (name != "" ? " · " + name : "");
         var parts = new List<string>();
         parts.Add(gender + (growth != "" ? ", " + growth : ""));
-        if (me != null && me.Track.Count > 0 && d.Track.Count > 0)
+        if (me != null && me.Track.Count > 0 && (posOverride != null || d.Track.Count > 0))
         {
-            double[] a = me.Track.Last(), b = d.Track.Last();
+            double[] a = me.Track.Last(), b = posOverride ?? d.Track.Last();
             double brg = Bearing(a, b);
             string s = string.Format(IC, "{0:0} m · {1} radar ({2})", Dist(a, b), RadarDir[(int)Math.Round(((brg % 360) + 360) % 360 / 45) % 8], CompassName(brg));
             // so với hướng bạn đang nhìn
@@ -89,10 +113,11 @@ class AlertToast : Form
 
     AlertToast(DinoAlert a)
     {
+        Color accent = a.Garage ? Color.FromArgb(255, 159, 28) : Color.FromArgb(255, 90, 79);
         FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; StartPosition = FormStartPosition.Manual;
         BackColor = Color.FromArgb(28, 30, 24); Size = new Size(W, H); Opacity = 0.94;
-        Controls.Add(new Panel { BackColor = Color.FromArgb(255, 90, 79), Dock = DockStyle.Left, Width = 6 });
-        Controls.Add(new Label { Text = "⚠ " + a.Title, ForeColor = Color.FromArgb(255, 211, 77), Font = new Font("Segoe UI", 11f, FontStyle.Bold), AutoSize = false, AutoEllipsis = true, Location = new Point(16, 8), Size = new Size(W - 24, 24) });
+        Controls.Add(new Panel { BackColor = accent, Dock = DockStyle.Left, Width = 6 });
+        Controls.Add(new Label { Text = (a.Garage ? "" : "⚠ ") + a.Title, ForeColor = a.Garage ? Color.FromArgb(255, 176, 64) : Color.FromArgb(255, 211, 77), Font = new Font("Segoe UI", 11f, FontStyle.Bold), AutoSize = false, AutoEllipsis = true, Location = new Point(16, 8), Size = new Size(W - 24, 24) });
         Controls.Add(new Label { Text = a.Detail, ForeColor = Color.Gainsboro, Font = new Font("Segoe UI", 9.5f), AutoSize = false, AutoEllipsis = true, Location = new Point(16, 34), Size = new Size(W - 24, 22) });
         var t = new Timer { Interval = 9000 };
         t.Tick += (s, e) => { t.Stop(); t.Dispose(); Close(); };
@@ -115,6 +140,16 @@ class AlertToast : Form
     }
 
     // âm báo riêng (2 nốt) - khác âm của Windows để dễ nhận ra
+    static byte[] wavGarage;
+    public static void BeepGarage() // 3 nốt đi lên – khác tiếng "vào vùng"
+    {
+        try
+        {
+            if (wavGarage == null) wavGarage = MakeTone(new[] { 523.0, 784.0, 1047.0 }, 0.1, 0.35);
+            new SoundPlayer(new MemoryStream(wavGarage)).Play();
+        }
+        catch { SystemSounds.Asterisk.Play(); }
+    }
     static byte[] wav;
     public static void Beep()
     {

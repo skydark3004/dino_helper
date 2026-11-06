@@ -54,6 +54,7 @@ class MainForm : Form
     readonly PvnCombat pvnCombat = new PvnCombat(); // máu đối thủ khi đánh nhau (combatlog)
     readonly PvnFriends pvnFriends = new PvnFriends(); // bạn bè/group từ PVN (/map) -> chấm xanh
     readonly PvnPrime pvnPrime = new PvnPrime(); CheckBox chkPrimeQ; // nhiệm vụ Prime của khủng long đang dùng (/api/overlay/me) -> overlay chỉ số
+    readonly PvnPark pvnPark = new PvnPark(); // nút "Cất gara" trên bản đồ web (chỉ luồng cất)
     readonly PvnGarage pvnGarage = new PvnGarage(); // gara PVN (dino đã cất) -> điểm đánh dấu màu riêng trên bản đồ
     Button btnScanKey; Label lblPvnKey, lblCombatRate;
     // nhịp gọi combatlog tự động: 2 s, có đòn trừ máu -> 0,5 s và đếm ngược 60 s (đòn mới đặt lại), hết 60 s -> về 2 s
@@ -103,6 +104,8 @@ class MainForm : Form
     }
     VitalsOverlay vitalsOv;
     CompassOverlay compassOv; CheckBox chkCompass; volatile bool compassOn;
+    // cất gara cần cách người khác ≥ 50 m: luồng đọc replay tính ParkInfo, overlay chỉ số hiện trạng thái (ParkCheck.cs)
+    volatile ParkInfo lastPark; CheckBox chkPark; volatile bool parkOn;
     CombatFeed feedOv; CheckBox chkFeed;
     void UpdateVitalsWanted() { if (vitalsOv != null) vitalsOv.Wanted = chkPvnLive.Checked && chkVitalsOv.Checked; }
     // bản đồ nhiệt PVN: cookie đăng nhập (đã giải mã) + trạng thái gọi API mỗi 5 s
@@ -205,7 +208,9 @@ class MainForm : Form
         row2.SetFlowBreak(lblLive, true);
         chkAlert = new CheckBox { Text = "Báo khi có khủng long người chơi mới vào vùng (góc màn hình, không chiếm focus game)", AutoSize = true, Checked = true, Margin = new Padding(0, 4, 0, 0) };
         chkAlertSound = new CheckBox { Text = "kèm âm thanh", AutoSize = true, Checked = true, Margin = new Padding(12, 4, 0, 0) };
-        var btnTestAlert = MakeButton("Thử", (s, e) => ShowAlerts(new List<DinoAlert> { new DinoAlert { Title = "Tyrannosaurus · Tên người chơi", Detail = "đực, 86% · 120 m · trên-phải radar (Đông Bắc) · phía sau bên phải" } }));
+        var btnTestAlert = MakeButton("Thử", (s, e) => ShowAlerts(new List<DinoAlert> {
+            new DinoAlert { Title = "Tyrannosaurus · Tên người chơi", Detail = "đực, 86% · 120 m · trên-phải radar (Đông Bắc) · phía sau bên phải" },
+            new DinoAlert { Garage = true, Title = "🏠 Tên người chơi lấy dino ra từ gara", Detail = "Tyrannosaurus · đực, 86% · 1628 m · phía trên radar (Bắc) · tại X 171172 Y 181247" } }));
         btnTestAlert.Margin = new Padding(12, 0, 0, 0);
         row2.Controls.Add(chkAlert); row2.Controls.Add(chkAlertSound); row2.Controls.Add(btnTestAlert);
         BuildMapTab();
@@ -223,6 +228,7 @@ class MainForm : Form
         pvnPrime.TokenProvider = () => { string b, e; return PvnToken.Load(out b, out e); };
         pvnPrime.Enabled = () => chkPvnLive.Checked && chkVitalsOv.Checked && chkPrimeQ.Checked;
         vitalsOv.Prime = pvnPrime; vitalsOv.PrimeOn = () => chkPrimeQ.Checked;
+        vitalsOv.Park = () => lastPark; vitalsOv.ParkOn = () => chkPark.Checked; parkOn = chkPark.Checked;
         if (chkPvnLive.Checked) pvnPrime.Start();
         feedOv = new CombatFeed(LoadSetting, SaveSetting) { Locked = chkOverlayLock.Checked, Wanted = chkFeed.Checked };
         feedOv.SetOpacity((int)numOverlayOpacity.Value);
@@ -231,6 +237,8 @@ class MainForm : Form
         pvnFriends.Enabled = () => chkPvnLive.Checked;
         pvnFriends.Changed = json => { if (server != null) server.PushFriends(json); };
         if (chkPvnLive.Checked) pvnFriends.Start();
+        pvnPark.TokenProvider = () => { string b, e; return PvnToken.Load(out b, out e); };
+        pvnPark.Changed = json => { if (server != null) server.PushPark(json); };
         pvnGarage.TokenProvider = () => { string b, e; return PvnToken.Load(out b, out e); };
         pvnGarage.Enabled = () => chkPvnLive.Checked;
         pvnGarage.ClientCount = () => server != null ? server.ClientCount : 0;
@@ -334,6 +342,7 @@ class MainForm : Form
 
         server = new LiveServer(Program.ExeDir);
         if (!server.Start()) server = null;
+        if (server != null) server.ParkAction = a => pvnPark.Command(a); // nút "Cất gara" của trang bản đồ
         PushLayers(); // trang mở sau sẽ nhận ngay cài đặt lớp khi kết nối
         if (chkPvnLive.Checked) pvnLive.Start();
         // cho thấy máy chủ bản đồ đang chạy ở đâu
@@ -950,6 +959,9 @@ class MainForm : Form
         chkPrimeQ = new CheckBox { Text = "Hiện nhiệm vụ Prime còn thiếu (đủ rồi thì chỉ ghi \"đã hoàn thành Prime\"; cần khoá PVN)", AutoSize = true, Checked = LoadSetting("vitalsprime", "1") == "1", Margin = new Padding(0, 2, 0, 0) };
         chkPrimeQ.CheckedChanged += (s, e) => { SaveSetting("vitalsprime", chkPrimeQ.Checked ? "1" : "0"); if (chkPrimeQ.Checked && chkPvnLive.Checked) pvnPrime.Start(); };
         lay.Controls.Add(chkPrimeQ);
+        chkPark = new CheckBox { Text = "Hiện trạng thái cất gara (cách người chơi khác ≥ 50 m mới cất được; theo replay đang quay)", AutoSize = true, Checked = LoadSetting("vitalspark", "1") == "1", Margin = new Padding(0, 2, 0, 0) };
+        chkPark.CheckedChanged += (s, e) => { SaveSetting("vitalspark", chkPark.Checked ? "1" : "0"); parkOn = chkPark.Checked; };
+        lay.Controls.Add(chkPark);
         chkCombat = new CheckBox { Text = "Khi đánh nhau: hiện máu đối thủ (combat)", AutoSize = true, Checked = LoadSetting("vitalscombat", "1") == "1", Margin = new Padding(0, 2, 0, 0) };
         chkCombat.CheckedChanged += (s, e) => SaveSetting("vitalscombat", chkCombat.Checked ? "1" : "0");
         lay.Controls.Add(chkCombat);
@@ -1351,7 +1363,7 @@ class MainForm : Form
         var rp = liveRp;
         new Thread(() =>
         {
-            string msg; bool stillLive = true; double len = 0; List<DinoAlert> alerts = null; CompassData compass = null;
+            string msg; bool stillLive = true; double len = 0; List<DinoAlert> alerts = null; CompassData compass = null; ParkInfo park = null;
             var sw = Stopwatch.StartNew();
             // thời gian từng bước (ms) -> ghi perf_log.txt khi một lần cập nhật chậm
             double tLoad = 0, tParse = 0, tAlert = 0, tMap = 0, tPush = 0; bool fresh = false, report = false; long bytesNew = 0;
@@ -1370,6 +1382,7 @@ class MainForm : Form
                 // chỉ báo khi game còn đang quay (dữ liệu là "bây giờ")
                 if (alertOn && stillLive) alerts = rp.CheckNewDinos(alertPresent, DateTime.Now, TimeSpan.FromSeconds(30));
                 if (compassOn && stillLive) compass = rp.CompassSnapshot(1000);
+                if (parkOn && stillLive) park = rp.ParkSnapshot();
                 double m3 = sw.Elapsed.TotalMilliseconds; tAlert = m3 - m2;
                 // bản đồ: mỗi lần; báo cáo + csv: mỗi 15 giây và khi dừng quay
                 if (!stillLive || (DateTime.Now - lastFullReport).TotalSeconds >= 15) { rp.Finish(); lastFullReport = DateTime.Now; report = true; }
@@ -1399,6 +1412,7 @@ class MainForm : Form
                 if (msg != null) log.AppendText(string.Format("[{0:HH:mm:ss}] {1}: {2}\r\n", DateTime.Now, Path.GetFileName(f), msg));
                 if (alerts != null && alerts.Count > 0 && chkAlert.Checked) ShowAlerts(alerts);
                 if (compass != null && watchFile == f && compassOv != null) compassOv.SetData(compass);
+                if (watchFile == f) lastPark = stillLive ? park : null;
                 double every = watchFile == f && rp != null && stillLive ? TrackWriteInterval(rp.MaxTime) : -1;
                 lblLive.Text = string.Format("{0} {1} · {2} · cập nhật {3:HH:mm:ss} ({4:0} ms){5}",
                     stillLive ? "● Đang quay" : "■ Đã dừng", Path.GetFileName(f), TimeSpan.FromSeconds(len).ToString(@"m\:ss"), DateTime.Now, took * 1000,
@@ -1414,6 +1428,13 @@ class MainForm : Form
 
     void ShowAlerts(List<DinoAlert> alerts)
     {
+        // lấy dino ra từ gara: ô cam + âm 3 nốt riêng, không gộp chung với "vào vùng"
+        var garage = alerts.Where(a => a.Garage).ToList();
+        alerts = alerts.Where(a => !a.Garage).ToList();
+        foreach (var a in garage) log.AppendText(string.Format("[{0:HH:mm:ss}] 🏠 {1} – {2}\r\n", DateTime.Now, a.Title.Replace("🏠 ", ""), a.Detail));
+        foreach (var a in garage) AlertToast.Show(a);
+        if (garage.Count > 0 && chkAlertSound.Checked) AlertToast.BeepGarage();
+        if (alerts.Count == 0) return;
         foreach (var a in alerts) log.AppendText(string.Format("[{0:HH:mm:ss}] ⚠ Vào vùng: {1} – {2}\r\n", DateTime.Now, a.Title, a.Detail));
         // nhiều con cùng lúc (vd mới bật tool giữa đám đông) -> gộp 1 ô
         if (alerts.Count > 3)

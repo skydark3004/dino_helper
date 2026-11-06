@@ -108,6 +108,12 @@ partial class Replay
         if (a.Get("bIsFemale") == "1") sb.Append(",\"f\":1");
         sb.Append(",\"o\":").Append(a.OpenTime.ToString("0.0", IC));
         if (a.CloseTime >= 0) sb.Append(",\"e\":").Append(a.CloseTime.ToString("0.0", IC));
+        // lấy dino ra từ gara: điểm xuất hiện thật [giờ,x,y,z]; mẫu giả trước đó bị bỏ (dựng lại đường đi 1 lần)
+        if (a.GarageOut != null)
+        {
+            sb.AppendFormat(IC, ",\"sp\":[{0:0.0},{1:0},{2:0},{3:0}]", a.GarageOut[0], a.GarageOut[1], a.GarageOut[2], a.GarageOut[3]);
+            if (!a.TrackFixed) { a.TrackFixed = true; a.TrackJson = new StringBuilder(); a.TrackDone = 0; a.TrackPrev = null; }
+        }
         // giờ chết (chỉ khi chết lúc đang thấy): trang tách thành "con sống" tới giờ này + "xác" từ giờ này
         if (cat != "corpse" && DiedWhileSeen(a)) sb.Append(",\"d\":").Append(a.DeadTime.ToString("0.0", IC));
         // lịch sử chế độ di chuyển [[giờ, mode],...] (4 = đang bơi) – chỉ vài mục mỗi con
@@ -124,6 +130,7 @@ partial class Replay
         for (int k = a.TrackDone; k < a.Track.Count; k++)
         {
             var s = a.Track[k]; var prev = a.TrackPrev;
+            if (a.GarageOut != null && s[0] < a.GarageOut[0] - 1e-6) continue; // mẫu giả trước khi nhảy sang vị trí thật
             // chỉ lưu khi đã di chuyển đủ xa so với mẫu đã lưu trước (cá/thịt 1 m, khủng long 0.3 m)
             // khủng long người chơi: lưu cả khi chỉ xoay người (yaw đổi >= 10°) để chỉ hướng "theo đồng hồ" đúng
             bool withYaw = (cat == "me" || cat == "player") && s.Length > 4;

@@ -127,6 +127,8 @@ class VitalsOverlay : Form
         string sig = CombatSig();
         if (sig != foeSig) { foeSig = sig; Relayout(); Invalidate(); }
         // nhiệm vụ Prime (đổi mỗi ~10 s khi PVN trả /me mới)
+        string kg = ParkSig();
+        if (kg != parkSig) { parkSig = kg; Relayout(); Invalidate(); }
         string psig = PrimeSig();
         if (psig != primeSig) { primeSig = psig; Relayout(); Invalidate(); }
 
@@ -169,6 +171,16 @@ class VitalsOverlay : Form
     }
     string primeHead, primeNote; readonly List<string> primeQuests = new List<string>();
 
+    // Trạng thái cất gara: cần cách người chơi khác ≥ 50 m (ParkCheck.cs; Gui đưa vào qua Park)
+    public Func<ParkInfo> Park; public Func<bool> ParkOn;
+    string parkSig = "", parkLine; bool parkOk;
+    ParkInfo CurPark()
+    {
+        if (Park == null || (ParkOn != null && !ParkOn())) return null;
+        var p = Park(); return p != null && (DateTime.Now - p.At).TotalSeconds <= 5 ? p : null;
+    }
+    string ParkSig() { var p = CurPark(); return p == null ? "" : (int)p.NearestM + "|" + p.Name; }
+
     // ---- nội dung ----
     struct Row { public string Label, Num; public double Pct; public Color Col; public bool Warn; }
     readonly List<Row> rows = new List<Row>();
@@ -208,7 +220,7 @@ class VitalsOverlay : Form
 
     void Relayout()
     {
-        rows.Clear(); status.Clear(); header = null; footer = null; primeHead = null; primeNote = null; primeQuests.Clear();
+        rows.Clear(); status.Clear(); header = null; footer = null; primeHead = null; primeNote = null; primeQuests.Clear(); parkLine = null;
         var v = cur;
         if (v != null && !v.HasDino) header = "PVN: chưa có khủng long (đang ở menu?)";
         else if (v != null)
@@ -238,6 +250,13 @@ class VitalsOverlay : Form
             if (v.Sick) status.Add("Ốm");
             if (v.Bacteria > 0) status.Add("Vi khuẩn " + Math.Round(v.Bacteria));
         }
+        var pk = v != null && v.HasDino ? CurPark() : null;
+        if (pk != null)
+        {
+            parkOk = pk.CanPark;
+            if (pk.CanPark) parkLine = "🅿 Cất gara: ✔ được" + (pk.NearestM >= 0 ? " (người gần nhất " + Math.Round(pk.NearestM) + " m)" : "");
+            else parkLine = "🅿 Cất gara: ✘ chưa được – " + (string.IsNullOrEmpty(pk.Name) ? (string.IsNullOrEmpty(pk.Species) ? "người chơi" : pk.Species) : pk.Name) + " cách " + Math.Round(pk.NearestM) + " m (cần ≥ " + ParkInfo.MinM + " m)";
+        }
         var pr = v != null && v.HasDino ? CurPrime() : null;
         if (pr != null)
         {
@@ -258,6 +277,7 @@ class VitalsOverlay : Form
         if (header != null) h += S(17);
         h += rows.Count * rowH;
         if (status.Count > 0) h += Measure(string.Join(" · ", status), fBold, w - 2 * pad) + S(2);
+        if (parkLine != null) h += S(4) + Measure(parkLine, fBold, w - 2 * pad);
         if (primeHead != null) h += S(8) + S(17) + primeQuests.Count * S(15);
         else if (primeNote != null) h += S(8) + S(16);
         if (foeList.Length > 0) h += S(8) + S(17) + Math.Min(foeList.Length, 5) * (S(15) + rowH);
@@ -301,6 +321,15 @@ class VitalsOverlay : Form
             y += S(2);
             TextRenderer.DrawText(g, s, fBold, new Rectangle(pad, y, w - 2 * pad, h), red, TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
             y += h;
+        }
+        // ---- cất gara: có người chơi trong 50 m thì không cất được ----
+        if (parkLine != null)
+        {
+            y += S(4);
+            int ph = Measure(parkLine, fBold, w - 2 * pad);
+            Color pc = curStale ? muted : parkOk ? Color.FromArgb(110, 231, 160) : red;
+            TextRenderer.DrawText(g, parkLine, fBold, new Rectangle(pad, y, w - 2 * pad, ph), pc, TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
+            y += ph;
         }
         // ---- Prime: chưa đủ -> nhiệm vụ chưa xong; đủ -> ghi chú ----
         if (primeHead != null || primeNote != null)

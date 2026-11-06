@@ -13,6 +13,9 @@ class Actor
     public Dictionary<string, string> First = new Dictionary<string, string>(), Last = new Dictionary<string, string>();
     public string LastPos; public double LastPosTime;
     public double DeadTime = -1; // giờ replay thấy bIsDead=1 lần đầu (-1 = chưa chết)
+    // Người chơi vừa LẤY DINO RA TỪ GARA / xuất hiện mới: vị trí đầu tiên server gửi là vị trí giả (gốc lệch), chưa tới 1,6 s sau
+    // nhảy xa > 100 m sang vị trí thật (đang rơi, mode 3). GarageOut = {giờ, x, y, z} của vị trí thật đầu tiên; GarageFrom = mẫu giả.
+    public double[] GarageOut, GarageFrom; public bool GarageAnnounced, TrackFixed;
     // tăng mỗi khi có dữ liệu mới -> bản đồ chỉ dựng lại JSON của đối tượng đã thay đổi
     public int Ver; public string JsonCache;
     // JSON trong JsonCache được dựng với các giá trị này (đổi bất kỳ cái nào -> dựng lại)
@@ -484,6 +487,13 @@ partial class Replay
             if (p.Length > 3 && double.TryParse(p[3].Replace("yaw=", ""), NumberStyles.Float, IC, out yaw)) a.Track.Add(new[] { CurTime, x, y, z, yaw });
             else a.Track.Add(new[] { CurTime, x, y, z });
             a.LastPos = val; a.LastPosTime = CurTime;
+            // phát hiện "lấy dino ra từ gara": mẫu đầu là vị trí giả, trong 1,6 s nhảy > 100 m (khủng long người chơi, không phải bạn)
+            if (a.GarageOut == null && a.Track.Count >= 2)
+            {
+                var f0 = a.Track[0]; var n0 = a.Track[a.Track.Count - 1];
+                if (CurTime - f0[0] <= 1.6 && Math.Sqrt((n0[1] - f0[1]) * (n0[1] - f0[1]) + (n0[2] - f0[2]) * (n0[2] - f0[2])) > 10000 && a.Get("Controller") == "" && a.Get("SteamId") != "")
+                { a.GarageOut = new[] { CurTime, n0[1], n0[2], n0[3] }; a.GarageFrom = f0; }
+            }
             // dòng cho positions.csv / events.csv chỉ cần khi xuất dữ liệu thô (tạo hàng trăm nghìn chuỗi rất tốn thời gian)
             if (FullOutput) Positions.Add(string.Format(IC, "{0:0.000},{1},{2},{3},{4},{5},{6},{7}", CurTime, a.Chan, ShortName(a.Class), p[0], p[1], p[2],
                 p.Length > 3 ? p[3].Replace("yaw=", "") : "", p.Length > 4 ? p[4].Replace("speed=", "") : ""));

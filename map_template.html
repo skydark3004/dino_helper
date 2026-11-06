@@ -88,6 +88,16 @@
     </div>
     <div class="info">Lăn chuột để phóng to, kéo để di chuyển.</div>
 
+    <div id="parkBox" style="display:none">
+      <h2>Cất gara</h2>
+      <div class="row">
+        <button id="parkBtn">🅿 Cất gara</button>
+        <button id="parkCancel" style="display:none">Huỷ</button>
+      </div>
+      <div class="info" id="parkHint"></div>
+      <div class="info" id="parkMsg"></div>
+    </div>
+
     <h2>Ảnh bản đồ nền</h2>
     <div class="row">
       <button id="pickImg">Chọn ảnh…</button>
@@ -182,6 +192,7 @@ let me =actors.find(a => a.c === "me");
 let FRIENDS = new Set(); // tên bạn bè/group PVN (chữ thường), tool gửi qua SSE "friends"
 let FRIEND_POS = [];     // bạn bè kèm vị trí từ PVN: {n,l,s,x,y,h,act} (act = đối tượng giả để vẽ như người chơi)
 const FRIEND_HEX = "#4cd964";
+const GARAGE_OUT_HEX = "#22d3ee", GARAGE_OUT_S = 300; // người chơi vừa lấy dino ra từ gara: ghim màu xanh ngọc ở chỗ xuất hiện 5 phút
 // tên người chơi nằm ở a.p (a.n là tên loài)
 const isFriend = a => a.c === "player" && !!a.p && FRIENDS.has(String(a.p).trim().toLowerCase());
 // Bạn bè PVN đang online mà replay KHÔNG có (ngoài tầm server gửi ~500 m): vẽ tại vị trí PVN báo, chỉ khi xem trực tiếp.
@@ -405,8 +416,15 @@ let alertSeeded = false; // lần đầu (mới mở trang): chỉ ghi nhận ai
 function checkNewPlayers(first) {
   if (!DATA || !DATA.live || OVERLAY) return; // overlay: tool đã tự báo (ô góc màn hình + âm)
   if (!alertSeeded) { first = true; alertSeeded = true; }
-  const now = Date.now(), news = [];
+  const now = Date.now(), news = [], garageNews = [];
   for (const a of actors) {
+    // lấy dino ra từ gara: thông báo riêng (ô cam + âm 3 nốt), 1 lần cho mỗi sự kiện, chỉ khi sự kiện vừa xảy ra
+    if (a.sp && a.c === "player" && !garageSeen.has(a.i)) {
+      garageSeen.add(a.i);
+      presentAt.set(a.p || (a.n + "#" + a.i), now);
+      if (!first && DATA.tmax - a.sp[0] < 30) garageNews.push(a);
+      continue;
+    }
     if (a.c !== "player" || a.e !== undefined) continue;   // chỉ con còn trong vùng
     const key = a.p || (a.n + "#" + a.i);
     const last = presentAt.get(key);
@@ -415,6 +433,23 @@ function checkNewPlayers(first) {
   }
   for (const a of news) showToast(a);
   if (news.length) beep();
+  for (const a of garageNews) showGarageToast(a);
+  if (garageNews.length) beep([523, 784, 1047]);
+}
+const garageSeen = new Set(); // mã actor đã xử lý sự kiện "lấy từ gara"
+function garageTitle(a) { return (a.p || "Người chơi") + (a.g === undefined || a.g >= 0.5 ? " lấy dino ra từ gara" : " xuất hiện mới (hồi sinh)"); }
+function showGarageToast(a) {
+  const box = document.getElementById("toasts");
+  const mp = me ? posAt(me, DATA.length) : null;
+  let line = `${esc(a.n)} · ${a.f ? "cái" : "đực"}${a.g !== undefined ? ", " + (a.g * 100).toFixed(0) + "%" : ""}`;
+  if (mp) { const g = guide(mp, headingAt(me, DATA.length), [0, a.sp[1], a.sp[2], a.sp[3]]); line += ` · ${g.d} m · ${g.radar} radar (${g.compass})`; }
+  line += ` · tại X ${a.sp[1]} Y ${a.sp[2]}`;
+  const el = document.createElement("div");
+  el.className = "toast"; el.style.borderLeftColor = GARAGE_OUT_HEX;
+  el.innerHTML = `<b style="color:${GARAGE_OUT_HEX}">🏠 ${esc(garageTitle(a))}</b><div>${line}</div>`;
+  box.prepend(el);
+  while (box.children.length > 5) box.lastChild.remove();
+  setTimeout(() => { el.style.opacity = 0; setTimeout(() => el.remove(), 450); }, 12000);
 }
 function showToast(a) {
   const box = document.getElementById("toasts");
@@ -432,10 +467,10 @@ function showToast(a) {
   setTimeout(() => { el.style.opacity = 0; setTimeout(() => el.remove(), 450); }, 10000);
 }
 let audioCtx = null;
-function beep() {
+function beep(freqs) {
   try {
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-    [880, 1175].forEach((f, k) => {
+    (freqs || [880, 1175]).forEach((f, k) => {
       const o = audioCtx.createOscillator(), g = audioCtx.createGain(), t0 = audioCtx.currentTime + k * 0.13;
       o.frequency.value = f; o.connect(g); g.connect(audioCtx.destination);
       g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(0.25, t0 + 0.01); g.gain.linearRampToValueAtTime(0, t0 + 0.12);
@@ -498,6 +533,9 @@ if (location.protocol.startsWith("http") && window.EventSource) {
     } catch (err) { FRIENDS = new Set(); FRIEND_POS = []; }
     draw();
   });
+  // nút "Cất gara": tool giữ mã bảo vệ (SSE "parktoken") + chạy luồng cất, đẩy trạng thái qua SSE "park"
+  es.addEventListener("parktoken", e => { PARK_TOKEN = e.data; if (!OVERLAY) document.getElementById("parkBox").style.display = ""; updateParkHint(); });
+  es.addEventListener("park", e => { try { parkState = JSON.parse(e.data); parkStateAt = Date.now(); } catch (err) {} renderPark(); });
   es.addEventListener("garage", e => { // gara PVN: mảng dinos
     try { const arr = JSON.parse(e.data); GARAGE = Array.isArray(arr) ? arr.filter(g => g && g.parkPos && typeof g.parkPos.x === "number" && typeof g.parkPos.y === "number") : []; } catch (err) { GARAGE = []; }
     if (gw.garageCnt) gw.garageCnt.textContent = GARAGE.length || "";
@@ -593,7 +631,7 @@ const viName = n => VI_ANIMAL[n] || n;
 // Bỏ qua nếu cùng người chơi đó đang hiện lại ở một kênh khác, hoặc kênh đóng vì chết (đã thành xác).
 const GHOST_S = 180; // mất dấu quá 3 phút -> không hiện nữa
 function ghostAt(a, time) {
-  if (!SHOW.ghost || a.x || a.e === undefined || time <= a.e || time - a.e > GHOST_S || !a.t.length) return null;
+  if (!SHOW.ghost || a.x || a.sp || a.e === undefined || time <= a.e || time - a.e > GHOST_S || !a.t.length) return null;
   // cùng người chơi: đang hiện ở kênh khác, hoặc có lần mất dấu mới hơn -> chỉ giữ 1 chấm (lần gần nhất)
   if (a.p && actors.some(b => b !== a && b.p === a.p && (posAt(b, time) || (b.e !== undefined && b.e <= time && (b.e > a.e || (b.e === a.e && b.i > a.i)))))) return null;
   let last = null;
@@ -1083,6 +1121,29 @@ function render() {
 
   const myHead = me ? headingAt(me, t) : null;
 
+  // người chơi vừa LẤY DINO RA TỪ GARA: ghim xanh ngọc (vòng đôi + mũi tên rơi xuống) tại chỗ xuất hiện, 5 phút, kèm "m:ss trước · khoảng cách"
+  if (CATS.player.on) {
+    for (const a of garageOutPins(t)) {
+      const [sx, sy] = toScreen(a.sp[1], a.sp[2]);
+      if (sx < -60 || sy < -60 || sx > W + 60 || sy > H + 60) continue;
+      const r = 9 * dpr, ago = Math.max(0, t - a.sp[0]);
+      ctx.save();
+      ctx.globalAlpha = Math.max(0.55, 1 - ago / GARAGE_OUT_S * 0.45);
+      ctx.fillStyle = "rgba(34,211,238,0.22)"; ctx.strokeStyle = GARAGE_OUT_HEX; ctx.lineWidth = 2.5 * dpr;
+      ctx.beginPath(); ctx.arc(sx, sy, r, 0, 7); ctx.fill(); ctx.stroke();
+      ctx.lineWidth = 1.2 * dpr; ctx.beginPath(); ctx.arc(sx, sy, r + 4 * dpr, 0, 7); ctx.stroke();
+      ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.moveTo(sx - 4 * dpr, sy - 3 * dpr); ctx.lineTo(sx + 4 * dpr, sy - 3 * dpr); ctx.lineTo(sx, sy + 4 * dpr); ctx.closePath(); ctx.fill();
+      const mp0 = me ? posAt(me, t) : null;
+      const l1 = "🏠 " + (a.p || "Người chơi") + " · lấy từ gara", l2 = `${viName(a.n)}${a.g !== undefined ? " " + Math.round(a.g * 100) + "%" : ""} · ${fmtAgo(ago)} trước` + (mp0 ? ` · ${Math.round(Math.hypot(mp0[1] - a.sp[1], mp0[2] - a.sp[2]) / 100)} m` : "");
+      ctx.textAlign = "center"; ctx.lineJoin = "round"; ctx.lineWidth = 3 * dpr; ctx.strokeStyle = "rgba(0,0,0,0.85)";
+      ctx.font = `bold ${11 * dpr}px Segoe UI`; ctx.fillStyle = GARAGE_OUT_HEX;
+      ctx.strokeText(l1, sx, sy - r - 20 * dpr); ctx.fillText(l1, sx, sy - r - 20 * dpr);
+      ctx.font = `${10.5 * dpr}px Segoe UI`; ctx.fillStyle = "#e6fbff";
+      ctx.strokeText(l2, sx, sy - r - 7 * dpr); ctx.fillText(l2, sx, sy - r - 7 * dpr);
+      ctx.restore(); ctx.textAlign = "left";
+    }
+  }
+
   // gara PVN: hình ngôi nhà màu cam + tên loài · % trưởng thành (vẽ trước, chấm khủng long đè lên)
   if (gw.garageOn && GARAGE.length) {
     const s = 7 * dpr;
@@ -1259,7 +1320,56 @@ function placeLabels(labels, dpr, mp) {
   ctx.restore();
 }
 
+// ---------- nút "Cất gara" (chỉ luồng cất; tool gọi API PVN, trang chỉ gửi lệnh tới tool) ----------
+let PARK_TOKEN = null, parkState = { s: "idle", left: 0, msg: "" }, parkStateAt = 0;
+const PARK_MIN_M = 50;
+// người chơi khác gần bạn nhất (m) ở thời điểm đang xem – PVN chỉ cho cất khi không ai trong 50 m
+function updateParkHint() {
+  const el = document.getElementById("parkHint");
+  if (!el || !PARK_TOKEN) return;
+  const mp = me ? posAt(me, t) : null;
+  if (!mp) { el.textContent = ""; return; }
+  let best = null, bd = Infinity;
+  const list = actors.concat(typeof pvnFriendActors === "function" && FRIEND_POS.length ? pvnFriendActors(t) : []);
+  for (const a of list) {
+    if (a.c !== "player" || a === me) continue;
+    const p = posAt(a, t); if (!p) continue;
+    const d = dist(mp, p);
+    if (d < bd) { bd = d; best = a; }
+  }
+  if (best && bd < PARK_MIN_M) { el.style.color = "#ff8a80"; el.textContent = `✘ ${best.p || best.n} cách ${Math.round(bd)} m (cần ≥ ${PARK_MIN_M} m) – chưa cất được`; }
+  else { el.style.color = "#6ee7a0"; el.textContent = best ? `✔ Không ai trong ${PARK_MIN_M} m (gần nhất ${Math.round(bd)} m)` : `✔ Không thấy ai trong tầm`; }
+}
+function renderPark() {
+  const btn = document.getElementById("parkBtn"), can = document.getElementById("parkCancel"), msg = document.getElementById("parkMsg");
+  if (!btn) return;
+  const s = parkState.s, busy = s === "starting" || s === "countdown" || s === "finalizing" || s === "waiting";
+  btn.disabled = busy; can.style.display = s === "countdown" ? "" : "none";
+  let text = "", col = "";
+  if (s === "countdown") text = `Đếm ngược ${parkState.left} s – bấm Huỷ để dừng…`;
+  else if (busy) text = parkState.msg || "Đang cất…";
+  else if (s === "done") { text = "✔ " + parkState.msg; col = "#6ee7a0"; }
+  else if (s === "failed") { text = "✘ " + parkState.msg; col = "#ff8a80"; }
+  else if (s === "cancelled") text = parkState.msg;
+  msg.style.color = col; msg.textContent = text;
+  if (!busy && text) { const at = parkStateAt; setTimeout(() => { if (parkStateAt === at && !(parkState.s === "countdown")) msg.textContent = ""; }, 20000); }
+}
+async function parkPost(p) {
+  try {
+    const r = await fetch(p, { method: "POST", headers: { "X-Park-Token": PARK_TOKEN || "" } });
+    const j = await r.json();
+    if (!j.ok) { parkState = { s: "failed", left: 0, msg: j.error || "Không gửi được lệnh" }; parkStateAt = Date.now(); renderPark(); }
+  } catch (err) { parkState = { s: "failed", left: 0, msg: "Không gọi được tool (đã tắt hoặc mất kết nối?)" }; parkStateAt = Date.now(); renderPark(); }
+}
+document.getElementById("parkBtn").onclick = () => {
+  if (!PARK_TOKEN) return;
+  if (!confirm("Cất khủng long đang chơi vào gara?\n\nĐếm ngược khoảng 30 giây (bấm Huỷ để dừng). Cần cách người chơi khác ≥ 50 m.")) return;
+  parkPost("/park/start");
+};
+document.getElementById("parkCancel").onclick = () => parkPost("/park/cancel");
+
 function updateSide() {
+  updateParkHint();
   document.getElementById("time").textContent = fmt(t) + " / " + fmt(DATA ? DATA.length : 0);
   const el = document.getElementById("near");
   const mp = me ? posAt(me, t) : null;
@@ -1323,6 +1433,38 @@ function nearestAt(e) {
   }
   return best;
 }
+// Ghim "lấy dino ra từ gara" (người chơi trong replay): còn hiện trong 5 phút, mỗi người chỉ giữ lần mới nhất
+function garageOutPins(time) {
+  const out = [];
+  for (const a of actors) {
+    if (!a.sp || a.c !== "player" || time < a.sp[0] || time - a.sp[0] > GARAGE_OUT_S) continue;
+    if (a.p && actors.some(b => b !== a && b.sp && b.p === a.p && b.sp[0] > a.sp[0] && b.sp[0] <= time)) continue;
+    out.push(a);
+  }
+  return out;
+}
+const fmtAgo = s => { s = Math.round(s); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
+function pinAt(e) {
+  if (!CATS.player.on) return null;
+  let best = null, bd = 16;
+  for (const a of garageOutPins(t)) {
+    const [sx, sy] = toScreen(a.sp[1], a.sp[2]);
+    const d = Math.hypot(sx / devicePixelRatio - e.offsetX, sy / devicePixelRatio - e.offsetY);
+    if (d < bd) { bd = d; best = a; }
+  }
+  return best;
+}
+function pinTip(a, e) {
+  const mp = me ? posAt(me, t) : null, ago = Math.max(0, t - a.sp[0]);
+  let html = `<b style="color:${GARAGE_OUT_HEX}">🏠 ${esc(garageTitle(a))}</b>`;
+  html += `<div style="color:var(--muted)">${esc(viName(a.n))} · ${a.f ? "cái" : "đực"}${a.g !== undefined ? " · trưởng thành " + (a.g * 100).toFixed(0) + "%" : ""}</div>`;
+  const rows = [["Xuất hiện", `${fmtAgo(ago)} trước`]];
+  if (mp) rows.push(["Cách bạn", `<b>${Math.round(Math.hypot(mp[1] - a.sp[1], mp[2] - a.sp[2]) / 100)} m</b>`]);
+  html += `<div class="tt">${rows.map(r => `<span class="tl">${r[0]}</span><span>${r[1]}</span>`).join("")}</div>`;
+  html += `<div class="tn">Vị trí xuất hiện đầu tiên (đang rơi xuống) – người chơi có thể đã di chuyển.</div><div class="tn">X ${a.sp[1]} · Y ${a.sp[2]} · Z ${a.sp[3]}</div>`;
+  tip.innerHTML = html; tip.style.display = "block";
+  tip.style.left = Math.min(e.offsetX + 14, cv.clientWidth - tip.offsetWidth - 6) + "px"; tip.style.top = (e.offsetY + 14) + "px";
+}
 // Gara PVN: marker gần con trỏ (≤ 14 px) -> ô thông tin đầy đủ
 function garageAt(e) {
   if (!gw.garageOn || !GARAGE.length) return null;
@@ -1385,6 +1527,8 @@ function garageTip(g, e) {
 function hover(e) {
   const gg = garageAt(e);
   if (gg) { garageTip(gg, e); return; }
+  const pn = pinAt(e);
+  if (pn) { pinTip(pn, e); return; }
   const best = nearestAt(e);
   if (!best) { tip.style.display = "none"; return; }
   const { a, p } = best, mp = me ? posAt(me, t) : null;

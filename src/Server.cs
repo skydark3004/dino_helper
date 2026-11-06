@@ -21,6 +21,46 @@ class LiveServer
     class SseClient { public string Name; public TcpClient Tcp; public NetworkStream Stream; }
     DateTime lastPageLog = DateTime.MinValue;
 
+    // Nút "Cất gara" trên trang: POST /park/start | /park/cancel. Chặn trang web lạ (CSRF) bằng 2 lớp: header Origin phải đúng
+    // http://127.0.0.1:<cổng> + header X-Park-Token = mã ngẫu nhiên của lần chạy này (trang lấy qua SSE "parktoken"; trang khác
+    // không đọc được SSE vì không có CORS, và không thể gửi header tuỳ biến mà không qua preflight – máy chủ không trả lời OPTIONS).
+    public Func<string, string> ParkAction;      // trả null = nhận lệnh, hoặc thông báo lỗi
+    readonly string parkToken = NewToken();
+    static string NewToken()
+    {
+        var b = new byte[16];
+        using (var g = new System.Security.Cryptography.RNGCryptoServiceProvider()) g.GetBytes(b);
+        var sb = new StringBuilder(); foreach (byte x in b) sb.Append(x.ToString("x2"));
+        return sb.ToString();
+    }
+    volatile string parkJson;
+    public void PushPark(string json)
+    {
+        parkJson = json;
+        List<SseClient> targets;
+        lock (lk) targets = new List<SseClient>(clients);
+        foreach (var cl in targets) SendRaw(cl, "event: park\ndata: " + json + "\n\n");
+    }
+
+    bool HandlePark(NetworkStream s, string path, string hdr)
+    {
+        string h = "\n" + hdr.ToLowerInvariant();
+        bool originOk = h.Contains("\norigin: http://127.0.0.1:" + Port + "\r") || h.Contains("\norigin: http://127.0.0.1:" + Port + "\n");
+        bool tokenOk = h.Contains("\nx-park-token: " + parkToken + "\r") || h.Contains("\nx-park-token: " + parkToken + "\n");
+        string status, body;
+        if (!originOk || !tokenOk) { status = "403 Forbidden"; body = "{\"ok\":false,\"error\":\"Không được phép\"}"; }
+        else
+        {
+            string err = ParkAction == null ? "Chưa sẵn sàng" : ParkAction(path == "/park/cancel" ? "cancel" : "start");
+            status = "200 OK"; body = err == null ? "{\"ok\":true}" : "{\"ok\":false,\"error\":" + JsonQ(err) + "}";
+        }
+        byte[] b = Encoding.UTF8.GetBytes(body);
+        WriteAscii(s, "HTTP/1.1 " + status + "\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: " + b.Length + "\r\nConnection: close\r\n\r\n");
+        s.Write(b, 0, b.Length);
+        return true;
+    }
+    static string JsonQ(string t) { return "\"" + (t ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"") + "\""; }
+
     public LiveServer(string rootDir) { root = Path.GetFullPath(rootDir).TrimEnd('\\') + "\\"; }
 
     public bool Start()
@@ -68,8 +108,16 @@ class LiveServer
         try
         {
             s = c.GetStream();
-            string target = ReadRequestPath(s);
+            string method, hdr;
+            string target = ReadRequestPath(s, out method, out hdr);
             if (target == null) { c.Close(); return; }
+            if (method == "POST")
+            {
+                // chỉ nhận đúng 2 lệnh của nút cất gara; mọi POST khác bỏ
+                if (target == "/park/start" || target == "/park/cancel") HandlePark(s, target, hdr);
+                try { c.Close(); } catch { }
+                return;
+            }
             string path = target, query = "";
             int q = target.IndexOf('?'); if (q >= 0) { path = target.Substring(0, q); query = target.Substring(q + 1); }
 
@@ -108,6 +156,9 @@ class LiveServer
                 if (ly != null) SendRaw(cl, "event: layers\ndata: " + ly + "\n\n");
                 string ht = heatJson;
                 if (ht != null) SendRaw(cl, "event: heatmap\ndata: " + ht + "\n\n");
+                SendRaw(cl, "event: parktoken\ndata: " + parkToken + "\n\n");
+                string pj = parkJson;
+                if (pj != null) SendRaw(cl, "event: park\ndata: " + pj + "\n\n");
                 string fr = friendsJson;
                 if (fr != null) SendRaw(cl, "event: friends\ndata: " + fr + "\n\n");
                 string gj = garageJson;
@@ -121,8 +172,9 @@ class LiveServer
         try { c.Close(); } catch { }
     }
 
-    static string ReadRequestPath(NetworkStream s)
+    static string ReadRequestPath(NetworkStream s, out string method, out string headers)
     {
+        method = null; headers = "";
         var buf = new byte[8192]; int n = 0;
         while (n < buf.Length)
         {
@@ -133,7 +185,9 @@ class LiveServer
         }
         string first = Encoding.ASCII.GetString(buf, 0, n).Split('\n')[0].Trim();
         var parts = first.Split(' ');
-        if (parts.Length < 2 || parts[0] != "GET") return null;
+        if (parts.Length < 2 || (parts[0] != "GET" && parts[0] != "POST")) return null;
+        method = parts[0];
+        headers = Encoding.ASCII.GetString(buf, 0, n);
         return parts[1]; // gồm cả phần ?query (Handle tách ra)
     }
 
