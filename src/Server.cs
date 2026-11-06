@@ -107,7 +107,10 @@ class LiveServer
                 string ly = layersJson;
                 if (ly != null) SendRaw(cl, "event: layers\ndata: " + ly + "\n\n");
                 string ht = heatJson;
-                if (ht != null) SendRaw(cl, "event: heatmap\ndata: " + ht + "\n\n");                return; // giữ kết nối mở để đẩy dữ liệu sau
+                if (ht != null) SendRaw(cl, "event: heatmap\ndata: " + ht + "\n\n");
+                string fr = friendsJson;
+                if (fr != null) SendRaw(cl, "event: friends\ndata: " + fr + "\n\n");
+                return; // giữ kết nối mở để đẩy dữ liệu sau
             }
 
             ServeFile(s, path);
@@ -203,6 +206,16 @@ class LiveServer
         List<SseClient> targets;
         lock (lk) targets = new List<SseClient>(clients);
         foreach (var cl in targets) SendRaw(cl, "event: heatmap\ndata: " + json + "\n\n");
+    }
+
+    // Tên bạn bè/group (mảng JSON, chữ thường) -> chấm xanh; trang mở sau nhận bản mới nhất
+    volatile string friendsJson;
+    public void PushFriends(string json)
+    {
+        friendsJson = json;
+        List<SseClient> targets;
+        lock (lk) targets = new List<SseClient>(clients);
+        foreach (var cl in targets) SendRaw(cl, "event: friends\ndata: " + json + "\n\n");
     }
 
     // Số trang (bản đồ / overlay) đang nối với tool – không có trang nào thì khỏi gọi API PVN

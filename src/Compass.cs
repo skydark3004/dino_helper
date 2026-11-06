@@ -236,7 +236,7 @@ class CompassOverlay : Form
         foreach (var t in d.Targets)
         {
             double r = Rel(t.Bearing, d.View);
-            Color c = DistColor(t.Dist);
+            Color c = PvnFriends.IsFriend(t.Name) ? (stale ? Color.FromArgb(40, 110, 50) : Color.FromArgb(80, 220, 100)) : DistColor(t.Dist);
             string lab = (string.IsNullOrEmpty(t.Name) ? t.Species : t.Name) + " " + Math.Round(t.Dist) + "m";
             if (Math.Abs(r) <= Half)
             {

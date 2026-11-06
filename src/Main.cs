@@ -59,11 +59,29 @@ static class Program
             int pid;
             if (int.TryParse(args[1], out pid))
                 try { System.Diagnostics.Process.GetProcessById(pid).WaitForExit(15000); } catch { }
-            args = new string[0];
+            args = new string[] { "-noupdate" };
         }
-        // không có tham số -> mở giao diện
+        // mở bình thường: chạy CapNhat.bat (cập nhật rồi tự mở lại tool với -noupdate). Không có bat / không phải bản git clone -> mở luôn
         if (args.Length == 0)
         {
+            try
+            {
+                string dir = AppDomain.CurrentDomain.BaseDirectory;
+                string bat = Path.Combine(dir, "CapNhat.bat");
+                if (File.Exists(bat) && (Directory.Exists(Path.Combine(dir, ".git")) || File.Exists(Path.Combine(dir, ".git"))))
+                {
+                    var psi = new System.Diagnostics.ProcessStartInfo(bat, "__auto");
+                    psi.WorkingDirectory = dir;
+                    psi.UseShellExecute = true;
+                    if (System.Diagnostics.Process.Start(psi) != null) return 0;
+                }
+            }
+            catch { }
+            args = new string[] { "-noupdate" };
+        }
+        if (args.Length == 1 && args[0] == "-noupdate")
+        {
+            Updater.CleanupOld(); // xoá DinoReplayReader.old*.exe còn sót (bản đang chạy thì bỏ qua)
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new MainForm());

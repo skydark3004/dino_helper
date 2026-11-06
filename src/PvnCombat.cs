@@ -30,6 +30,27 @@ static class PvnSign
     }
     public static bool HasKey { get { return HmacKey.Length == 64; } }
 
+    // PVN từ chối (401/403) 2 lần liên tiếp -> khoá (hoặc token) không còn dùng được: xoá pvn_hmac.txt + báo giao diện (popup).
+    // Khoá nằm trong bản PVN Overlay, PVN đổi khoá khi cập nhật -> bấm "Quét khoá PVN" để lấy khoá mới.
+    public static Action Rejected;
+    static int fails;
+    public static void ReportOk() { fails = 0; }
+    public static void ReportError(Exception e)
+    {
+        var w = e as System.Net.WebException;
+        var hr = w != null ? w.Response as System.Net.HttpWebResponse : null;
+        if (hr == null || ((int)hr.StatusCode != 401 && (int)hr.StatusCode != 403)) return;
+        if (++fails < 2) return;
+        fails = 0;
+        Invalidate();
+        var cb = Rejected; if (cb != null) { try { cb(); } catch { } }
+    }
+    public static void Invalidate()
+    {
+        key = "";
+        try { File.Delete(Path.Combine(Program.ExeDir, "pvn_hmac.txt")); } catch { }
+    }
+
     // Nút "Quét khoá PVN": dò bản PVN-Overlay đã cài (app.asar) rồi lưu pvn_hmac.txt. Trả về đã có khoá chưa.
     public static bool Scan()
     {
@@ -229,6 +250,13 @@ class PvnCombat
     string mySteamId;
 
     public bool Running { get { return th != null && th.IsAlive; } }
+    // Từng đòn liên quan tới bạn (cho thông báo CombatFeed). Giao diện lấy bằng TakeHits().
+    readonly List<CombatHit> hitQueue = new List<CombatHit>();
+    public CombatHit[] TakeHits()
+    {
+        lock (hitQueue) { var a = hitQueue.ToArray(); hitQueue.Clear(); return a; }
+    }
+
 
     public void Start(string steamId)
     {
@@ -244,6 +272,7 @@ class PvnCombat
     void Clear()
     {
         lock (foes) { foes.Clear(); seenIds.Clear(); }
+        lock (hitQueue) hitQueue.Clear();
         Foes = new CombatFoe[0]; InCombat = false;
     }
 
@@ -255,7 +284,7 @@ class PvnCombat
             if (!on) { if (InCombat || Foes.Length > 0) Clear(); Sleep(1000); continue; }
             string token = TokenProvider != null ? TokenProvider() : null;
             if (token == null) { Sleep(2000); continue; }
-            try { Poll(token); } catch (Exception e) { State = "lỗi: " + Short(e); }
+            try { Poll(token); } catch (Exception e) { State = "lỗi: " + Short(e); PvnSign.ReportError(e); }
             Prune();
             Sleep(PollMs < 100 ? 100 : PollMs);
         }
@@ -279,6 +308,7 @@ class PvnCombat
         using (var s = new StreamReader(resp.GetResponseStream()))
             body = s.ReadToEnd();
         State = "ok " + DateTime.Now.ToString("HH:mm:ss");
+        PvnSign.ReportOk();
         Ingest(body);
     }
 
@@ -324,6 +354,15 @@ class PvnCombat
         if (at > f.LastHit) f.LastHit = at;
 
         double dmg = Num(h, "damage"), hpAfter = Num(h, "hpAfter"), hpBefore = Num(h, "hpBefore");
+        lock (hitQueue)
+        {
+            if (hitQueue.Count > 50) hitQueue.RemoveAt(0);
+            hitQueue.Add(new CombatHit
+            {
+                Out = iAtk, Name = f.Name, Species = f.Species, Damage = dmg, HpAfter = hpAfter,
+                Ability = Str(h, "ability"), Cause = Str(h, "cause"), Killed = h.Contains("\"killed\":true"), At = at
+            });
+        }
         if (iAtk) // bạn đánh nó -> hpAfter là máu CỦA NÓ
         {
             if (!double.IsNaN(dmg)) f.DmgFromYou += dmg;
@@ -379,4 +418,13 @@ class PvnCombat
         var m = Regex.Match(json, "\"" + key + "\"\\s*:\\s*(-?[0-9.]+(?:[eE][-+]?[0-9]+)?)");
         double v; return m.Success && double.TryParse(m.Groups[1].Value, System.Globalization.NumberStyles.Float, IC, out v) ? v : double.NaN;
     }
+}
+
+// 1 đòn (bạn đánh nó hoặc nó đánh bạn). Out = bạn gây sát thương; HpAfter = máu CỦA BÊN BỊ ĐÁNH sau đòn.
+class CombatHit
+{
+    public bool Out, Killed;
+    public string Name, Species, Ability, Cause;
+    public double Damage, HpAfter;
+    public DateTime At;
 }

@@ -44,12 +44,7 @@
   .info { color: var(--muted); font-size: 12px; }
   .near div { padding: 2px 0; }
   .near b { font-variant-numeric: tabular-nums; }
-  .near-item { cursor: pointer; border-radius: 4px; padding: 2px 4px !important; margin: 0 -4px; }
-  .near-item:hover { background: #2a2f22; }
-  #target { line-height: 1.5; }
-  .tg-name { font-weight: 600; }
-  .tg-big { font-size: 20px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
-  .arrows { display: flex; gap: 14px; margin: 6px 0; }
+  .near-item { border-radius: 4px; padding: 2px 4px !important; margin: 0 -4px; }
   .arrow-box { text-align: center; }
   .arrow-cap { font-size: 11px; color: var(--muted); max-width: 90px; }
   #toasts { position: absolute; top: 12px; left: 14px; display: flex; flex-direction: column; gap: 8px; pointer-events: none; z-index: 5; }
@@ -82,9 +77,6 @@
 
     <h2>Lớp hiển thị</h2>
     <div id="layers"></div>
-
-    <h2>Chỉ đường</h2>
-    <div id="target"></div>
 
     <h2>Gần bạn nhất</h2>
     <div class="near" id="near"><span class="info">—</span></div>
@@ -168,6 +160,10 @@ const tip = document.getElementById("tip"), hint = document.getElementById("hint
 const slider = document.getElementById("slider");
 let actors = DATA ? DATA.actors : [];
 let me = actors.find(a => a.c === "me");
+let FRIENDS = new Set(); // tên bạn bè/group PVN (chữ thường), tool gửi qua SSE "friends"
+const FRIEND_HEX = "#4cd964";
+const isFriend = a => a.c === "player" && !!a.n && FRIENDS.has(String(a.n).trim().toLowerCase());
+const dotHex = a => isFriend(a) ? FRIEND_HEX : CATS[a.c].hex;
 let follow = true; // đang xem thời điểm mới nhất (kéo thanh thời gian lùi lại / bấm Phát -> false)
 let t = DATA ? DATA.length : 0, /* mặc định xem thời điểm mới nhất */ playing = false, speed = 5, view = { cx: 0, cy: 0, s: 0.002 };
 let img = null, imgName = "", calib = null, pickMode = 0, pickPts = [];
@@ -211,10 +207,9 @@ for (const k in CATS) {
 // ---------- cập nhật trực tiếp khi replay đang quay ----------
 function applyData(d) {
   const first = !DATA;
-  // trang /live chuyển sang replay khác (script cắt file) -> mã đối tượng khác nhau, bỏ mục tiêu đang ghim
-  if (DATA && d.file !== DATA.file) { pinnedId = null; follow = true; live.tv = null; live.at = 0; }
+  // trang /live chuyển sang replay khác (script cắt file) -> mã đối tượng khác nhau
+  if (DATA && d.file !== DATA.file) { follow = true; live.tv = null; live.at = 0; }
   DATA = d; actors = d.actors; me = actors.find(a => a.c === "me");
-  hoverActor = null; // mục tiêu ghim được giữ theo mã "i", không cần đặt lại
   liveArrived(d);
   if (follow) t = d.live ? liveTime(performance.now()) : DATA.length;
   slider.value = t;
@@ -324,8 +319,6 @@ function showToast(a) {
   const el = document.createElement("div");
   el.className = "toast";
   el.innerHTML = `<b>⚠ ${esc(a.n)}${a.p ? " · " + esc(a.p) : ""}</b><div>${esc(line)}</div>`;
-  el.title = "Bấm để ghim làm mục tiêu chỉ đường";
-  el.onclick = () => { pinnedId = a.i; draw(); el.remove(); };
   box.prepend(el);
   while (box.children.length > 5) box.lastChild.remove();
   setTimeout(() => { el.style.opacity = 0; setTimeout(() => el.remove(), 450); }, 10000);
@@ -386,6 +379,7 @@ if (location.protocol.startsWith("http") && window.EventSource) {
     try { const d = JSON.parse(e.data); gw.heat = d && d.ok && Array.isArray(d.cells) ? d.cells : null; } catch (err) { gw.heat = null; }
     gw.heatVer++; if (gw.heatCnt) gw.heatCnt.textContent = gw.heat ? gw.heat.length : ""; draw();
   });
+  es.addEventListener("friends", e => { try { FRIENDS = new Set(JSON.parse(e.data)); } catch (err) { FRIENDS = new Set(); } draw(); }); // bạn bè PVN -> chấm xanh
   es.addEventListener("layers", e => { try { pendingLayers = JSON.parse(e.data); applyLayers(pendingLayers); } catch (err) {} });
 } else {
   // Mở thẳng file map.html: tự kiểm tra version.js
@@ -491,9 +485,6 @@ function nearestGastro(p) {
   return best ? { g: best, d: Math.round(bd / 100) } : null;
 }
 
-// Mục tiêu đang ghim (bấm vào chấm) và đối tượng đang rê chuột
-let pinnedId = null, hoverActor = null;
-const pinnedActor = () => pinnedId === null ? null : actors.find(a => a.i === pinnedId) || null;
 
 // ---------- biến đổi toạ độ ----------
 function resize() { cv.width = cv.clientWidth * devicePixelRatio; cv.height = cv.clientHeight * devicePixelRatio; draw(); }
@@ -962,30 +953,7 @@ function render() {
 
   // (đã bỏ vẽ vệt đường đi của khủng long theo yêu cầu – cho nhẹ; dữ liệu đường đi vẫn giữ để tua thời gian)
 
-  // đường chỉ dẫn từ bạn tới mục tiêu đang ghim (liền) / đang rê chuột (nét đứt)
   const myHead = me ? headingAt(me, t) : null;
-  if (mp) {
-    const [mx, my] = toScreen(mp[1], mp[2]);
-    const pin = pinnedActor();
-    for (const tg of [pin, hoverActor !== pin ? hoverActor : null]) {
-      if (!tg) continue;
-      const p = posAt(tg, t); if (!p) continue;
-      const [tx, ty] = toScreen(p[1], p[2]);
-      const g = guide(mp, myHead, p);
-      ctx.strokeStyle = tg === pin ? "rgba(255,211,77,0.95)" : "rgba(255,255,255,0.8)";
-      ctx.lineWidth = (tg === pin ? 3 : 2) * dpr; ctx.setLineDash(tg === pin ? [] : [6 * dpr, 5 * dpr]);
-      ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(tx, ty); ctx.stroke(); ctx.setLineDash([]);
-      const label = guideShort(g);
-      ctx.font = `bold ${12 * dpr}px Segoe UI`; ctx.textAlign = "center";
-      ctx.lineWidth = 4 * dpr; ctx.strokeStyle = "rgba(0,0,0,0.85)"; ctx.fillStyle = tg === pin ? "#ffd34d" : "#fff";
-      // đường ngắn -> đặt chữ ngay dưới mục tiêu (tên mục tiêu nằm bên phải) cho khỏi đè lên mũi tên
-      const len = Math.hypot(tx - mx, ty - my);
-      let lx = (mx + tx) / 2, ly = (my + ty) / 2 - 6 * dpr;
-      if (len < 120 * dpr) { lx = tx; ly = ty + 24 * dpr; }
-      ctx.strokeText(label, lx, ly); ctx.fillText(label, lx, ly);
-      ctx.textAlign = "left";
-    }
-  }
 
   // chấm (vẽ lớp nhỏ trước, khủng long sau cùng)
   const order = ["meat", "fish", "animal", "corpse", "player", "me"];
@@ -1004,7 +972,7 @@ function render() {
           const [gx, gy] = toScreen(g[1], g[2]);
           if (gx < -20 || gy < -20 || gx > W + 20 || gy > H + 20) continue;
           ctx.save(); ctx.globalAlpha = 0.75; ctx.setLineDash([3 * dpr, 2 * dpr]);
-          ctx.strokeStyle = CATS[c].hex; ctx.lineWidth = 2.5 * dpr;
+          ctx.strokeStyle = dotHex(a); ctx.lineWidth = 2.5 * dpr;
           ctx.beginPath(); ctx.arc(gx, gy, CATS[c].r * dpr, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
           labels.push({ a, c, sx: gx, sy: gy, x: gx + (CATS[c].r + 4) * dpr, ghost: g, lost: t - a.e });
         }
@@ -1022,14 +990,11 @@ function render() {
         meArrow = { x: sx, y: sy, r: 11 * k }; // nhãn của con khác không được đè lên mũi tên
         continue; // chỉ mũi tên, không nhãn ("Bạn" / loài / %)
       }
+      ctx.fillStyle = dotHex(a);
       ctx.beginPath(); ctx.arc(sx, sy, rr, 0, Math.PI * 2); ctx.fill();
       if (["me", "player", "dino", "corpse", "animal"].includes(c)) {
         ctx.strokeStyle = "#000"; ctx.lineWidth = 1.5 * dpr; ctx.stroke();
         labels.push({ a, c, sx, sy, x: sx + rr + 4 * dpr });
-      }
-      if (a.i === pinnedId) { // vòng vàng quanh mục tiêu đang ghim
-        ctx.strokeStyle = "#ffd34d"; ctx.lineWidth = 3 * dpr;
-        ctx.beginPath(); ctx.arc(sx, sy, rr + 5 * dpr, 0, Math.PI * 2); ctx.stroke();
       }
     }
   }
@@ -1060,7 +1025,7 @@ function render() {
 }
 
 // nhãn luôn hiện cạnh chấm: dòng 1 = tên người chơi (hoặc "Bạn" / loài), dòng 2 = loài · % trưởng thành · giới tính
-// Bạn và mục tiêu ghim được xếp chỗ trước; nhãn đè lên nhãn đã xếp thì dịch xuống/lên, có đường nối về chấm.
+// Bạn được xếp chỗ trước; nhãn đè lên nhãn đã xếp thì dịch xuống/lên, có đường nối về chấm.
 const labelSlot = new Map(); // mã đối tượng -> chỗ đặt nhãn ở khung trước
 let meArrow = null;          // vị trí mũi tên của bạn trên màn hình (vật cản khi đặt nhãn)
 const textWCache = new Map();
@@ -1091,8 +1056,8 @@ function placeLabels(labels, dpr, mp) {
     const BAR = 7 * dpr; // vạch màu (cùng màu chấm) bên trái nhãn
     L.w = w + BAR + 3 * dpr; L.h = (L.l2 ? 2 : 1) * LH;
     L.gap = L.x - L.sx; L.rr = Math.max(3 * dpr, L.gap - 4 * dpr); // khoảng cách chấm -> nhãn, bán kính chấm
-    L.col = c === "me" ? "#ffd34d" : CATS[c].hex;
-    L.pri = c === "me" ? 0 : a.i === pinnedId ? 1 : L.ghost ? 3 : 2;
+    L.col = c === "me" ? "#ffd34d" : dotHex(a);
+    L.pri = c === "me" ? 0 : L.ghost ? 3 : 2;
   }
   labels.sort((p, q) => p.pri - q.pri);
   // vật cản: mọi chấm (để nhãn không che marker của con khác) + các nhãn đã đặt
@@ -1145,39 +1110,22 @@ function placeLabels(labels, dpr, mp) {
 
 function updateSide() {
   document.getElementById("time").textContent = fmt(t) + " / " + fmt(DATA ? DATA.length : 0);
-  const el = document.getElementById("near"), tgEl = document.getElementById("target");
+  const el = document.getElementById("near");
   const mp = me ? posAt(me, t) : null;
   if (!mp) {
     el.innerHTML = '<span class="info">Không thấy khủng long của bạn ở thời điểm này.</span>';
-    tgEl.innerHTML = ""; return;
+    return;
   }
   const myHead = headingAt(me, t);
   const name = a => esc(a.p || viName(a.n)) + (a.c === "corpse" ? " (xác)" : "");
 
-  // mục tiêu đang ghim
-  const pin = pinnedActor(), pp = pin ? posAt(pin, t) : null;
-  if (pp) {
-    const g = guide(mp, myHead, pp), poi = nearestPoi(pp);
-    tgEl.innerHTML = `<div class="tg-name">${name(pin)}</div>`
-      + `<div class="tg-big">${g.d} m · ${g.radar}</div>`
-      + `<div class="arrows">${arrowSvg(g.b, "#ffd34d", "radar")}${g.rel !== undefined ? arrowSvg(g.rel, "#7ee081", "view") : ""}</div>`
-      + (g.rel !== undefined ? `<div>${g.side} → <b>${g.turn}</b></div>` : "")
-      + (poi ? `<div>Gần địa danh <b>${esc(poi.name)}</b>${poi.d > 30 ? ` (cách ${poi.d} m)` : ""}</div>` : "")
-      + `<div class="info">Trên radar PVN, mục tiêu nằm ở ${g.radar} so với mũi tên vàng của bạn (phía ${g.compass}).</div>`
-      + `<div class="row"><button id="unpin">Bỏ ghim</button></div>`;
-    document.getElementById("unpin").onclick = () => { pinnedId = null; draw(); };
-  } else {
-    tgEl.innerHTML = `<span class="info">Bấm vào một chấm trên bản đồ (hoặc tên bên dưới) để chỉ đường tới đó. Bản đồ này xoay giống radar PVN (Bắc ở trên).</span>`;
-  }
-
-  // danh sách gần nhất (bấm để ghim)
+  // danh sách gần nhất
   const list = actors.filter(a => ["player", "dino", "corpse", "animal"].includes(a.c) && CATS[a.c].on).map(a => { const p = posAt(a, t); return p ? { a, g: guide(mp, myHead, p) } : null; })
     .filter(Boolean).sort((x, y) => x.g.d - y.g.d).slice(0, 8);
   const ng = gw.gastroOn ? nearestGastro(mp) : null;
   const gastroHtml = ng ? `<div><span class="sw" style="display:inline-block;background:#d9d4c3;border-radius:2px"></span> Sỏi gần nhất – <b>${guideShort(guide(mp, myHead, [0, ng.g[0], ng.g[1], mp[3]]))}</b></div>` : "";
   el.innerHTML = gastroHtml + (list.length ? list.map(o => `<div class="near-item" data-i="${o.a.i}"><span class="sw" style="display:inline-block;background:${CATS[o.a.c].hex}"></span> ${name(o.a)} – <b>${guideShort(o.g)}</b></div>`).join("")
     : '<span class="info">Không có khủng long nào khác.</span>');
-  for (const d of el.querySelectorAll(".near-item")) d.onclick = () => { pinnedId = +d.dataset.i; draw(); };
 }
 const fmt = s => Math.floor(s / 60) + ":" + String(Math.floor(s % 60)).padStart(2, "0");
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -1190,9 +1138,6 @@ addEventListener("mouseup", () => { drag = null; cv.classList.remove("drag"); })
 cv.addEventListener("click", e => {
   if (pickMode) { pickClick(e); return; }
   if (downAt && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 4) return; // vừa kéo bản đồ, không phải bấm
-  // bấm vào khủng long/xác/cá/thịt -> ghim làm mục tiêu chỉ đường; bấm lại lần nữa -> bỏ ghim
-  const hit = nearestAt(e);
-  if (hit && hit.a !== me) { pinnedId = pinnedId === hit.a.i ? null : hit.a.i; draw(); }
 });
 cv.addEventListener("mousemove", e => {
   if (drag) { view.cx = drag.cx - (e.clientX - drag.x) / view.s; view.cy = drag.cy - (e.clientY - drag.y) / view.s; draw(); return; }
@@ -1229,8 +1174,6 @@ function nearestAt(e) {
 }
 function hover(e) {
   const best = nearestAt(e);
-  const newHover = best && best.a !== me ? best.a : null;
-  if (newHover !== hoverActor) { hoverActor = newHover; draw(); }
   if (!best) { tip.style.display = "none"; return; }
   const { a, p } = best, mp = me ? posAt(me, t) : null;
   // dòng 1: tên · loài; dòng 2: loại, giới tính, % trưởng thành; rồi bảng nhãn | giá trị
@@ -1249,7 +1192,7 @@ function hover(e) {
   if (["me", "player", "dino", "animal"].includes(a.c)) { const pi = placeInfo(a, p); rows.push(...pi.rows); note = pi.note; }
   html += `<div class="tt">${rows.map(r => `<span class="tl">${r[0]}</span><span>${r[1]}</span>`).join("")}</div>`;
   if (note) html += `<div class="tn">${note}</div>`;
-  html += `<div class="tn">${a !== me ? (a.i === pinnedId ? "Bấm để bỏ ghim" : "Bấm để ghim chỉ đường") + " · " : ""}X ${p[1]} · Y ${p[2]} · Z ${p[3]}</div>`;
+  html += `<div class="tn">X ${p[1]} · Y ${p[2]} · Z ${p[3]}</div>`;
   tip.innerHTML = html; tip.style.display = "block";
   tip.style.left = Math.min(e.offsetX + 14, cv.clientWidth - tip.offsetWidth - 6) + "px"; tip.style.top = (e.offsetY + 14) + "px";
 }

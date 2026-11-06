@@ -52,6 +52,7 @@ class MainForm : Form
     // chỉ số khủng long của bạn qua WebSocket của PVN Overlay (PvnLive.cs) -> cửa sổ overlay riêng (VitalsOverlay.cs)
     readonly PvnLive pvnLive = new PvnLive(); CheckBox chkPvnLive, chkVitalsOv, chkVitalsNum, chkCombat; Label lblPvnLive; int pvnLastFrames; bool pvnKickLogged;
     readonly PvnCombat pvnCombat = new PvnCombat(); // máu đối thủ khi đánh nhau (combatlog)
+    readonly PvnFriends pvnFriends = new PvnFriends(); // bạn bè/group từ PVN (/map) -> chấm xanh
     Button btnCombatRate, btnScanKey; Label lblPvnKey;
     string CombatRateText() { return pvnCombat.PollMs == 500 ? "Nhịp gọi: 0,5 s (nhấn để về 2 s)" : "Nhịp gọi: 2 s (nhấn để xuống 0,5 s)"; }
     // bật/tắt combat theo đã có khoá PVN chưa (combatlog cần ký HMAC)
@@ -59,6 +60,7 @@ class MainForm : Form
     {
         bool hasKey = PvnSign.HasKey;
         chkCombat.Enabled = hasKey; if (!hasKey) chkCombat.Checked = false;
+        chkFeed.Enabled = hasKey; if (!hasKey) chkFeed.Checked = false;
         btnCombatRate.Enabled = hasKey;
         if (lblPvnKey != null)
         {
@@ -87,6 +89,7 @@ class MainForm : Form
     }
     VitalsOverlay vitalsOv;
     CompassOverlay compassOv; CheckBox chkCompass; volatile bool compassOn;
+    CombatFeed feedOv; CheckBox chkFeed;
     void UpdateVitalsWanted() { if (vitalsOv != null) vitalsOv.Wanted = chkPvnLive.Checked && chkVitalsOv.Checked; }
     // bản đồ nhiệt PVN: cookie đăng nhập (đã giải mã) + trạng thái gọi API mỗi 5 s
     string pvnToken; bool pvnAuthFail; volatile bool heatBusy; DateTime heatNext = DateTime.MinValue; bool heatPushedEmpty = true;
@@ -194,8 +197,15 @@ class MainForm : Form
         compassOn = chkCompass.Checked;
         // combat: gọi combatlog khi bật kết nối PVN + ô combat + đang nhận live (đang trong game) + có khoá HMAC
         pvnCombat.TokenProvider = () => { string b, e; return PvnToken.Load(out b, out e); };
-        pvnCombat.Enabled = () => chkPvnLive.Checked && chkCombat.Checked && pvnLive.Ok;
+        pvnCombat.Enabled = () => chkPvnLive.Checked && (chkCombat.Checked || chkFeed.Checked) && pvnLive.Ok;
+        vitalsOv.FoesOn = () => chkCombat.Checked;
+        feedOv = new CombatFeed(LoadSetting, SaveSetting) { Locked = chkOverlayLock.Checked, Wanted = chkFeed.Checked };
+        feedOv.SetOpacity((int)numOverlayOpacity.Value);
         if (chkPvnLive.Checked) pvnCombat.Start(PvnToken.SteamId());
+        pvnFriends.TokenProvider = () => { string b, e; return PvnToken.Load(out b, out e); };
+        pvnFriends.Enabled = () => chkPvnLive.Checked;
+        pvnFriends.Changed = json => { if (server != null) server.PushFriends(json); };
+        if (chkPvnLive.Checked) pvnFriends.Start();
         ovTimer = new System.Windows.Forms.Timer { Interval = 250 };
         ovTimer.Tick += (s, e) => OverlayTick();
         ovTimer.Start();
@@ -850,9 +860,9 @@ class MainForm : Form
         lay.Controls.Add(rowOv);
         var rowOv2 = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 4, 0, 0) };
         chkOverlayLock = new CheckBox { Text = "Khoá overlay (bấm xuyên, ẩn thanh tiêu đề) · Ctrl+F9", AutoSize = true, Checked = true, Margin = new Padding(0, 6, 0, 0) };
-        chkOverlayLock.CheckedChanged += (s, e) => { overlay.Locked = chkOverlayLock.Checked; overlay.Tick(); if (vitalsOv != null) vitalsOv.Locked = chkOverlayLock.Checked; if (compassOv != null) compassOv.Locked = chkOverlayLock.Checked; };
+        chkOverlayLock.CheckedChanged += (s, e) => { overlay.Locked = chkOverlayLock.Checked; overlay.Tick(); if (vitalsOv != null) vitalsOv.Locked = chkOverlayLock.Checked; if (compassOv != null) compassOv.Locked = chkOverlayLock.Checked; if (feedOv != null) feedOv.Locked = chkOverlayLock.Checked; };
         numOverlayOpacity = new NumericUpDown { Minimum = 20, Maximum = 100, Increment = 5, Value = 85, Width = 52, Margin = new Padding(4, 3, 0, 0) };
-        numOverlayOpacity.ValueChanged += (s, e) => { overlay.Opacity = (int)numOverlayOpacity.Value; overlay.Tick(); if (vitalsOv != null) vitalsOv.SetOpacity((int)numOverlayOpacity.Value); if (compassOv != null) compassOv.SetOpacity((int)numOverlayOpacity.Value); };
+        numOverlayOpacity.ValueChanged += (s, e) => { overlay.Opacity = (int)numOverlayOpacity.Value; overlay.Tick(); if (vitalsOv != null) vitalsOv.SetOpacity((int)numOverlayOpacity.Value); if (compassOv != null) compassOv.SetOpacity((int)numOverlayOpacity.Value); if (feedOv != null) feedOv.SetOpacity((int)numOverlayOpacity.Value); };
         rowOv2.Controls.Add(chkOverlayLock);
         rowOv2.Controls.Add(new Label { Text = "Độ đậm", AutoSize = true, Margin = new Padding(16, 7, 0, 0) });
         rowOv2.Controls.Add(numOverlayOpacity);
@@ -895,7 +905,7 @@ class MainForm : Form
         chkPvnLive.CheckedChanged += (s, e) =>
         {
             SaveSetting("pvnlive", chkPvnLive.Checked ? "1" : "0");
-            if (chkPvnLive.Checked) { pvnKickLogged = false; pvnLive.Start(); pvnCombat.Start(PvnToken.SteamId()); } else { pvnLive.Stop(); pvnCombat.Stop(); }
+            if (chkPvnLive.Checked) { pvnKickLogged = false; pvnLive.Start(); pvnCombat.Start(PvnToken.SteamId()); pvnFriends.Start(); } else { pvnLive.Stop(); pvnCombat.Stop(); pvnFriends.Stop(); }
             UpdateVitalsWanted(); PvnLiveTick();
         };
         lay.Controls.Add(chkPvnLive);
@@ -910,6 +920,13 @@ class MainForm : Form
         chkCombat = new CheckBox { Text = "Khi đánh nhau: hiện máu đối thủ (combat)", AutoSize = true, Checked = LoadSetting("vitalscombat", "1") == "1", Margin = new Padding(0, 2, 0, 0) };
         chkCombat.CheckedChanged += (s, e) => SaveSetting("vitalscombat", chkCombat.Checked ? "1" : "0");
         lay.Controls.Add(chkCombat);
+        chkFeed = new CheckBox { Text = "Thông báo từng đòn: hiện sát thương bạn gây / nhận + kỹ năng, mất dần sau 3 s", AutoSize = true, Checked = LoadSetting("combatfeed", "1") == "1", Margin = new Padding(0, 6, 0, 0) };
+        chkFeed.CheckedChanged += (s, e) => { SaveSetting("combatfeed", chkFeed.Checked ? "1" : "0"); if (feedOv != null) feedOv.Wanted = chkFeed.Checked; };
+        lay.Controls.Add(chkFeed);
+        var rowFeed = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 2, 0, 0) };
+        rowFeed.Controls.Add(MakeButton("Thử thông báo đòn", (s, e) => { if (feedOv != null) { feedOv.Wanted = true; feedOv.Demo(); } }));
+        rowFeed.Controls.Add(new Label { Text = "Đổi vị trí: mở khoá (Ctrl+F9) → kéo khung nét đứt, lăn chuột đổi cỡ → khoá lại.", AutoSize = true, ForeColor = Color.Gray, Margin = new Padding(8, 8, 0, 0) });
+        lay.Controls.Add(rowFeed);
         // nút đổi nhịp gọi combatlog: 2 s <-> 0,5 s (0,5 s = mượt hơn nhưng gọi server nhiều gấp 4) + nút quét khoá PVN
         pvnCombat.PollMs = LoadSetting("combatms", "2000") == "500" ? 500 : 2000;
         var rowCombat = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 4, 0, 0) };
@@ -957,6 +974,7 @@ class MainForm : Form
         lay.Controls.Add(new Panel { Width = 1, Height = 24, Margin = Padding.Empty });
 
         pvnToken = PvnHeat.Load();
+        PvnSign.Rejected = OnPvnKeyRejected;
         UpdatePvnStatus(null);
     }
 
@@ -969,6 +987,46 @@ class MainForm : Form
     }
 
     // hộp thoại thân thiện (không phải [LỖI]): ok = thành công, còn lại = nhắc làm lại
+
+    // Popup cảnh báo (không phải lỗi nhập của người dùng); ISLE_TEST -> chỉ ghi log
+    void PvnWarn(string title, string msg)
+    {
+        log.AppendText("[PVN] " + msg.Replace("\n\n", " ").Replace("\n", " ") + "\r\n");
+        if (Environment.GetEnvironmentVariable("ISLE_TEST") == null)
+            MessageBox.Show(this, msg, title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+    }
+
+    // Cookie hết hạn (theo exp trong JWT) -> xoá file + báo, TRƯỚC khi gọi API. true = vừa xoá.
+    bool ExpireCookieIfNeeded()
+    {
+        if (pvnToken == null) return false;
+        var info = PvnHeat.Decode(pvnToken);
+        if (info == null || info.Expires == DateTime.MaxValue || info.Expires > DateTime.Now) return false;
+        DropCookie("Cookie PVN đã hết hạn (từ " + info.Expires.ToString("dd/MM/yyyy HH:mm") + ").");
+        return true;
+    }
+
+    void DropCookie(string reason)
+    {
+        PvnHeat.Clear(); pvnToken = null; pvnAuthFail = false; PushHeatEmpty(); UpdatePvnStatus(null);
+        BeginInvoke((Action)(() => PvnWarn("Cookie PVN không dùng được",
+            reason + "\n\nTool đã xoá cookie cũ. Bản đồ nhiệt sẽ tắt cho tới khi bạn lấy cookie mới:\ntab \"Bản đồ & overlay\" → \"1. Mở trang PVN\" → làm lại 3 bước.")));
+    }
+
+    // PVN từ chối khoá HMAC / token (2 lần liên tiếp) -> pvn_hmac.txt đã bị xoá (PvnSign.Invalidate) -> báo
+    void OnPvnKeyRejected()
+    {
+        try
+        {
+            BeginInvoke((Action)(() =>
+            {
+                UpdateCombatEnabled();
+                PvnWarn("Khoá PVN không còn dùng được",
+                    "PVN từ chối yêu cầu (401/403) hai lần liên tiếp: khoá HMAC cũ (hoặc token PVN Overlay) đã hết hiệu lực.\n\nTool đã xoá pvn_hmac.txt, nên máu đối thủ / thông báo đòn / bạn bè (chấm xanh) tạm tắt.\n\nCách lấy lại: mở PVN Overlay một lần (đăng nhập, cập nhật bản mới nếu có), tắt nó, rồi bấm \"Quét khoá PVN\" ở tab \"PVN trực tiếp\".");
+            }));
+        }
+        catch { }
+    }
     void PvnNotify(string msg, bool ok)
     {
         log.AppendText("Bản đồ nhiệt PVN: " + msg.Replace("\n\n", " ").Replace("\n", " ") + "\r\n");
@@ -1066,6 +1124,7 @@ class MainForm : Form
     // gọi mỗi giây (liveTimer): có cookie + lớp đang bật + có trang đang mở -> gọi API mỗi 5 s (luồng nền)
     void HeatTick()
     {
+        if (ExpireCookieIfNeeded()) return; // hết hạn: xoá file + popup, không gọi API
         if (server == null || pvnToken == null || pvnAuthFail || heatBusy) return;
         CheckBox cb;
         if (!layerChecks.TryGetValue("heat", out cb) || !cb.Checked || server.ClientCount == 0) return;
@@ -1089,7 +1148,7 @@ class MainForm : Form
                     }
                     else if (res == PvnHeat.Result.AuthFailed)
                     {
-                        pvnAuthFail = true; PushHeatEmpty(); UpdatePvnStatus(null);
+                        DropCookie("PVN không nhận cookie nữa (" + err + ") – có thể đã hết hạn hoặc bạn đã đăng xuất.");
                         log.AppendText("Bản đồ nhiệt PVN: " + err + " → lấy lại cookie ở tab \"Bản đồ & overlay\".\r\n");
                     }
                     else
@@ -1177,8 +1236,17 @@ class MainForm : Form
         log.AppendText("Overlay radar: game cần chạy Borderless/Windowed. Ctrl+F9 = khoá/mở khoá (mở khoá để kéo, đổi cỡ, lăn chuột đổi bán kính).\r\n");
     }
 
+    void DrainCombatHits()
+    {
+        var hits = pvnCombat.TakeHits();
+        if (hits.Length == 0 || feedOv == null || !chkFeed.Checked) return;
+        foreach (var h in hits) feedOv.Add(h);
+    }
+
     void OverlayTick()
     {
+        if (feedOv != null) feedOv.Active = ovWanted || (liveRp != null && liveRunning);
+        DrainCombatHits();
         if (!ovWanted) return;
         overlay.Tick();
         if (overlay.IsOpen) { ovSeen = true; return; }
@@ -1205,9 +1273,10 @@ class MainForm : Form
         UnregisterHotKey(Handle, HOTKEY_OVERLAY);
         UnregisterHotKey(Handle, HOTKEY_ZOOM_IN); UnregisterHotKey(Handle, HOTKEY_ZOOM_OUT);
         if (ovWanted) overlay.Close(); // overlay không còn dữ liệu khi tool tắt
-        pvnLive.Stop(); pvnCombat.Stop();
+        pvnLive.Stop(); pvnCombat.Stop(); pvnFriends.Stop();
         if (vitalsOv != null) vitalsOv.Close();
         if (compassOv != null) compassOv.Close();
+        if (feedOv != null) feedOv.Close();
         base.OnFormClosing(e);
     }
 

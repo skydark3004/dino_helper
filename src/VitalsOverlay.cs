@@ -143,10 +143,11 @@ class VitalsOverlay : Form
         saveSetting("vitalspos", Left + "," + Top + "," + scale.ToString("0.0#", System.Globalization.CultureInfo.InvariantCulture));
     }
 
+    public Func<bool> FoesOn; // ô "hiện máu đối thủ" (độc lập với thông báo từng đòn)
     CombatFoe[] foeList = new CombatFoe[0]; string foeSig = "";
     string CombatSig()
     {
-        if (combat == null) return "";
+        if (combat == null || (FoesOn != null && !FoesOn())) return "";
         var f = combat.Foes; var sb = new StringBuilder();
         foreach (var x in f) sb.Append(x.SteamId).Append(':').Append((int)x.Hp).Append(x.Killed ? "k" : "").Append('|');
         return sb.ToString();
@@ -221,7 +222,7 @@ class VitalsOverlay : Form
             if (v.Sick) status.Add("Ốm");
             if (v.Bacteria > 0) status.Add("Vi khuẩn " + Math.Round(v.Bacteria));
         }
-        foeList = combat != null ? combat.Foes : new CombatFoe[0];
+        foeList = combat != null && (FoesOn == null || FoesOn()) ? combat.Foes : new CombatFoe[0];
 
         if (curStale) footer = "PVN: mất tín hiệu";
         if (!locked) footer = (footer != null ? footer + " · " : "") + "kéo để di chuyển · lăn chuột = cỡ";
