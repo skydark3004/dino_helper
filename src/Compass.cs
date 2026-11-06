@@ -103,7 +103,7 @@ class CompassOverlay : Form
             if (ok) scale = Math.Max(0.6f, Math.Min(2.5f, ps));
         }
         MakeFonts();
-        ClientSize = new Size(S(560), S(64));
+        ClientSize = new Size(S(560), S(84));
         if (ok) Location = new Point(px, py);
         else { var wa = Screen.PrimaryScreen.WorkingArea; Location = new Point(wa.Left + (wa.Width - Width) / 2, wa.Top + 6); }
 
@@ -229,50 +229,111 @@ class CompassOverlay : Form
         using (var b = new SolidBrush(stale ? Color.FromArgb(120, 100, 40) : Color.FromArgb(255, 211, 77)))
             g.FillPolygon(b, new[] { new Point(cx - S(5), stripY - S(1)), new Point(cx + S(5), stripY - S(1)), new Point(cx, stripY + S(6)) });
 
-        // khủng long: chấm trên thanh (gần trước), nhãn bên dưới (2 hàng, bỏ nhãn nếu chồng)
+        // khủng long: chấm trên thanh + nhãn bên dưới (tối đa 3 hàng, nhãn tự dồn sang bên / xuống hàng dưới để không đè nhau)
         int labY = base_ + S(4), labH = S(15);
         var used = new List<Rectangle>();
-        int leftN = 0, rightN = 0;
-        foreach (var t in d.Targets)
+        var tgs = d.Targets;                     // đã sắp theo khoảng cách (gần trước = ưu tiên chỗ tốt nhất)
+        int offL = 0, offR = 0;
+        foreach (var t in tgs) { double r0 = Rel(t.Bearing, d.View); if (Math.Abs(r0) > Half) { if (r0 < 0) offL++; else offR++; } }
+
+        // 1) chấm: vẽ con xa trước, con gần sau (đè lên). Chấm trùng hướng thì so le 2 mức cao thấp + viền tối để tách ra
+        var dots = new List<int[]>();            // {x, mức}
+        for (int i = tgs.Count - 1; i >= 0; i--)
+        {
+            var t = tgs[i];
+            double r = Rel(t.Bearing, d.View);
+            if (Math.Abs(r) > Half) continue;
+            Color c = PvnFriends.IsFriend(t.Name) ? (stale ? Color.FromArgb(40, 110, 50) : Color.FromArgb(80, 220, 100)) : DistColor(t.Dist);
+            int x = (int)Math.Round(cx + r * ppd), rad = S(t.Dist < 50 ? 5 : 4);
+            int lvl = 0;
+            for (int tryL = 0; tryL < 2; tryL++)
+            {
+                bool clash = false; foreach (var q in dots) if (q[1] == tryL && Math.Abs(q[0] - x) < rad * 2 + S(1)) clash = true;
+                if (!clash) { lvl = tryL; break; }
+                lvl = (tryL + 1) % 2;
+            }
+            dots.Add(new[] { x, lvl });
+            int cy = base_ - (lvl == 0 ? S(12) : S(5));
+            using (var b = new SolidBrush(c)) g.FillEllipse(b, x - rad, cy - rad, rad * 2, rad * 2);
+            using (var pen = new Pen(Color.FromArgb(200, 12, 14, 10), Math.Max(1f, S(1)))) g.DrawEllipse(pen, x - rad, cy - rad, rad * 2, rad * 2);
+        }
+
+        // 2) nhãn theo thứ tự gần → xa
+        int hidden = 0, doneL = 0, doneR = 0;
+        for (int pass = 0; pass < 2; pass++)   // lượt 0: con ngoài thanh (nhãn mũi tên ở mép, cần luôn thấy), lượt 1: con trong thanh
+        foreach (var t in tgs)
         {
             double r = Rel(t.Bearing, d.View);
+            if ((Math.Abs(r) > Half) != (pass == 0)) continue;
             Color c = PvnFriends.IsFriend(t.Name) ? (stale ? Color.FromArgb(40, 110, 50) : Color.FromArgb(80, 220, 100)) : DistColor(t.Dist);
-            string lab = (string.IsNullOrEmpty(t.Name) ? t.Species : t.Name) + " " + Math.Round(t.Dist) + "m";
+            string nm = string.IsNullOrEmpty(t.Name) ? t.Species : t.Name;
+            if (nm != null && nm.Length > 16) nm = nm.Substring(0, 15) + "…";   // tên dài chiếm chỗ → cắt bớt
+            string lab = nm + " " + Math.Round(t.Dist) + "m";
             if (Math.Abs(r) <= Half)
             {
-                int x = (int)Math.Round(cx + r * ppd), rad = S(t.Dist < 50 ? 5 : 4);
-                using (var b = new SolidBrush(c)) g.FillEllipse(b, x - rad, base_ - S(11) - rad, rad * 2, rad * 2);
+                int x = (int)Math.Round(cx + r * ppd);
                 var sz = TextRenderer.MeasureText(lab, fText, Size.Empty, TextFormatFlags.NoPadding);
-                for (int row = 0; row < 2; row++)
+                bool placed = false;
+                for (int row = 0; row < 3 && !placed; row++)
                 {
-                    var rc = new Rectangle(Math.Max(1, Math.Min(w - sz.Width - 1, x - sz.Width / 2)), labY + row * labH, sz.Width, labH);
-                    bool hit = false; foreach (var u in used) if (u.IntersectsWith(Rectangle.Inflate(rc, S(3), 0))) hit = true;
-                    if (hit) continue;
-                    used.Add(rc);
-                    TextRenderer.DrawText(g, lab, fText, rc, c, TextFormatFlags.NoPadding);
-                    break;
+                    int y = labY + row * labH;
+                    int ideal = Math.Max(1, Math.Min(w - sz.Width - 1, x - sz.Width / 2));
+                    // thử giữa chấm, rồi dịch sang phải / trái qua nhãn đang chắn
+                    var cands = new List<int> { ideal };
+                    foreach (var u in used)
+                        if (u.Y == y)
+                        {
+                            cands.Add(u.Right + S(6));
+                            cands.Add(u.Left - sz.Width - S(6));
+                        }
+                    foreach (int cxl in cands)
+                    {
+                        if (cxl < 1 || cxl + sz.Width > w - 1) continue;
+                        if (Math.Abs(cxl + sz.Width / 2 - x) > S(70)) continue;      // không dịch quá xa chấm của nó
+                        var rc = new Rectangle(cxl, y, sz.Width, labH);
+                        bool hit = false; foreach (var u in used) if (u.IntersectsWith(Rectangle.Inflate(rc, S(4), 0))) { hit = true; break; }
+                        if (hit) continue;
+                        used.Add(rc); placed = true;
+                        TextRenderer.DrawText(g, lab, fText, rc, c, TextFormatFlags.NoPadding);
+                        // nhãn bị dời hoặc ở hàng dưới -> vạch nối mảnh lên chấm cho biết của con nào
+                        if (row > 0 || Math.Abs(cxl + sz.Width / 2 - x) > S(10))
+                            using (var pen = new Pen(Color.FromArgb(110, c.R, c.G, c.B)))
+                                g.DrawLine(pen, x, base_ - S(1), Math.Max(cxl + 2, Math.Min(cxl + sz.Width - 2, x)), y + S(1));
+                        break;
+                    }
                 }
+                if (!placed) hidden++;
             }
             else
             {
-                // ngoài thanh: mũi tên ở mép bên cần quay sang (tối đa 1 nhãn mỗi bên, kèm số con còn lại)
+                // ngoài thanh: mũi tên ở mép bên cần quay sang; chỉ nhãn con gần nhất mỗi bên, kèm "+N" số con còn lại
                 bool left = r < 0;
-                int n = left ? leftN++ : rightN++;
-                if (n > 0) continue;
+                if (left ? doneL++ > 0 : doneR++ > 0) continue;
                 int ax = left ? pad : w - pad, ay = stripY + stripH / 2, aw = S(9);
                 using (var b = new SolidBrush(c))
                     g.FillPolygon(b, left ? new[] { new Point(ax, ay), new Point(ax + aw, ay - S(7)), new Point(ax + aw, ay + S(7)) }
                                            : new[] { new Point(ax, ay), new Point(ax - aw, ay - S(7)), new Point(ax - aw, ay + S(7)) });
-                string s2 = lab + (Math.Abs(r) > 150 ? " (sau lưng)" : "");
+                int more = (left ? offL : offR) - 1;
+                string s2 = lab + (Math.Abs(r) > 150 ? " (sau lưng)" : "") + (more > 0 ? "  +" + more : "");
                 var sz = TextRenderer.MeasureText(s2, fText, Size.Empty, TextFormatFlags.NoPadding);
-                var rc = new Rectangle(left ? pad : w - pad - sz.Width, labY + labH, sz.Width, labH);
-                used.Add(rc);
-                TextRenderer.DrawText(g, s2, fText, rc, c, TextFormatFlags.NoPadding);
+                bool placed = false;
+                for (int row = 0; row < 3 && !placed; row++)
+                {
+                    var rc = new Rectangle(left ? pad : w - pad - sz.Width, labY + row * labH, sz.Width, labH);
+                    bool hit = false; foreach (var u in used) if (u.IntersectsWith(Rectangle.Inflate(rc, S(4), 0))) { hit = true; break; }
+                    if (hit) continue;
+                    used.Add(rc); placed = true;
+                    TextRenderer.DrawText(g, s2, fText, rc, c, TextFormatFlags.NoPadding);
+                }
+                if (!placed) hidden++;
             }
         }
-        // số con ngoài tầm thanh còn lại
-        if (leftN > 1) TextRenderer.DrawText(g, "+" + (leftN - 1), fSmall, new Point(pad, labY), muted, TextFormatFlags.NoPadding);
-        if (rightN > 1) { string s3 = "+" + (rightN - 1); var sz = TextRenderer.MeasureText(s3, fSmall, Size.Empty, TextFormatFlags.NoPadding); TextRenderer.DrawText(g, s3, fSmall, new Point(w - pad - sz.Width, labY), muted, TextFormatFlags.NoPadding); }
+        if (hidden > 0)
+        {
+            string hs = "+" + hidden + " ẩn";
+            var hsz = TextRenderer.MeasureText(hs, fSmall, Size.Empty, TextFormatFlags.NoPadding);
+            TextRenderer.DrawText(g, hs, fSmall, new Point(w - hsz.Width - pad, h - hsz.Height - S(2)), muted, TextFormatFlags.NoPadding);
+        }
 
         string foot = stale ? "chưa có dữ liệu mới" : d.ViewIsBody ? "(hướng thân – không có hướng camera)" : null;
         if (!locked) foot = (foot != null ? foot + " · " : "") + "kéo để di chuyển · lăn chuột = cỡ";
@@ -298,7 +359,7 @@ class CompassOverlay : Form
         float ns = Math.Max(0.6f, Math.Min(2.5f, scale + (e.Delta > 0 ? 0.1f : -0.1f)));
         if (Math.Abs(ns - scale) < 0.001f) return;
         int cxOld = Left + Width / 2;
-        scale = ns; MakeFonts(); ClientSize = new Size(S(560), S(64)); Left = cxOld - Width / 2;
+        scale = ns; MakeFonts(); ClientSize = new Size(S(560), S(84)); Left = cxOld - Width / 2;
         Invalidate(); posDirty = true;
     }
     protected override void Dispose(bool disposing)
