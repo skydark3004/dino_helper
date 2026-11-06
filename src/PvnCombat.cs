@@ -241,7 +241,21 @@ class PvnCombat
     public volatile bool InCombat;
     public volatile string State = "";
     public DateTime CombatStart;
-    public volatile int PollMs = 2000;     // nhịp gọi combatlog (nút trong tool đổi 2000 <-> 500)
+    // Nhịp gọi combatlog tự đổi: bình thường 2 s; đòn đầu tiên của trận (có người trừ máu liên quan tới bạn) -> 0,5 s;
+    // mỗi đòn mới đặt lại bộ đếm FastHoldSec (60 s); hết 60 s không có đòn nào -> về lại 2 s.
+    public const int SlowMs = 2000, FastMs = 500;
+    public const double FastHoldSec = 60;
+    DateTime fastUntil = DateTime.MinValue;
+    public int PollMs { get { return FastSecondsLeft > 0 ? FastMs : SlowMs; } }
+    // số giây còn ở nhịp 0,5 s (0 = đang nhịp 2 s)
+    public int FastSecondsLeft
+    {
+        get
+        {
+            double s = (fastUntil - DateTime.Now).TotalSeconds;
+            return s > 0 ? (int)Math.Ceiling(s) : 0;
+        }
+    }
 
     const double WindowSec = 10;           // không có đòn mới trong 10 s -> hết combat
     Thread th; volatile bool stop;
@@ -271,6 +285,7 @@ class PvnCombat
 
     void Clear()
     {
+        fastUntil = DateTime.MinValue;
         lock (foes) { foes.Clear(); seenIds.Clear(); }
         lock (hitQueue) hitQueue.Clear();
         Foes = new CombatFoe[0]; InCombat = false;
@@ -341,6 +356,7 @@ class PvnCombat
         bool iAtk = aId != null && aId == mySteamId;
         bool iVic = vId != null && vId == mySteamId;
         if (!iAtk && !iVic) return; // chỉ đòn liên quan tới bạn
+        fastUntil = DateTime.Now.AddSeconds(FastHoldSec); // có đòn (trừ máu) -> chuyển/giữ nhịp 0,5 s, đếm lại 60 s
 
         string foeId = iAtk ? vId : aId;
         if (foeId == null) return;

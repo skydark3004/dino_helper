@@ -53,15 +53,27 @@ class MainForm : Form
     readonly PvnLive pvnLive = new PvnLive(); CheckBox chkPvnLive, chkVitalsOv, chkVitalsNum, chkCombat; Label lblPvnLive; int pvnLastFrames; bool pvnKickLogged;
     readonly PvnCombat pvnCombat = new PvnCombat(); // máu đối thủ khi đánh nhau (combatlog)
     readonly PvnFriends pvnFriends = new PvnFriends(); // bạn bè/group từ PVN (/map) -> chấm xanh
-    Button btnCombatRate, btnScanKey; Label lblPvnKey;
-    string CombatRateText() { return pvnCombat.PollMs == 500 ? "Nhịp gọi: 0,5 s (nhấn để về 2 s)" : "Nhịp gọi: 2 s (nhấn để xuống 0,5 s)"; }
+    Button btnScanKey; Label lblPvnKey, lblCombatRate;
+    // nhịp gọi combatlog tự động: 2 s, có đòn trừ máu -> 0,5 s và đếm ngược 60 s (đòn mới đặt lại), hết 60 s -> về 2 s
+    string CombatRateText()
+    {
+        int left = pvnCombat.FastSecondsLeft;
+        if (left > 0) return string.Format("Nhịp gọi: 0,5 s – còn {0}:{1:00} rồi về 2 s", left / 60, left % 60);
+        return "Nhịp gọi: 2 s – tự xuống 0,5 s khi có đòn đầu tiên";
+    }
+    void RefreshCombatRateText()
+    {
+        if (lblCombatRate == null) return;
+        string t = CombatRateText();
+        if (lblCombatRate.Text != t) lblCombatRate.Text = t;
+    }
     // bật/tắt combat theo đã có khoá PVN chưa (combatlog cần ký HMAC)
     void UpdateCombatEnabled()
     {
         bool hasKey = PvnSign.HasKey;
         chkCombat.Enabled = hasKey; if (!hasKey) chkCombat.Checked = false;
         chkFeed.Enabled = hasKey; if (!hasKey) chkFeed.Checked = false;
-        btnCombatRate.Enabled = hasKey;
+        if (lblCombatRate != null) lblCombatRate.Enabled = hasKey;
         if (lblPvnKey != null)
         {
             lblPvnKey.ForeColor = hasKey ? Color.DarkGreen : Color.Gray;
@@ -927,24 +939,18 @@ class MainForm : Form
         chkCombat = new CheckBox { Text = "Khi đánh nhau: hiện máu đối thủ (combat)", AutoSize = true, Checked = LoadSetting("vitalscombat", "1") == "1", Margin = new Padding(0, 2, 0, 0) };
         chkCombat.CheckedChanged += (s, e) => SaveSetting("vitalscombat", chkCombat.Checked ? "1" : "0");
         lay.Controls.Add(chkCombat);
-        chkFeed = new CheckBox { Text = "Thông báo từng đòn: hiện sát thương bạn gây / nhận + kỹ năng, mất dần sau 3 s", AutoSize = true, Checked = LoadSetting("combatfeed", "1") == "1", Margin = new Padding(0, 6, 0, 0) };
+        chkFeed = new CheckBox { Text = "Thông báo từng đòn: hiện sát thương bạn gây / nhận + kỹ năng, mất dần sau 4 s", AutoSize = true, Checked = LoadSetting("combatfeed", "1") == "1", Margin = new Padding(0, 6, 0, 0) };
         chkFeed.CheckedChanged += (s, e) => { SaveSetting("combatfeed", chkFeed.Checked ? "1" : "0"); if (feedOv != null) feedOv.Wanted = chkFeed.Checked; };
         lay.Controls.Add(chkFeed);
         var rowFeed = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 2, 0, 0) };
         rowFeed.Controls.Add(MakeButton("Thử thông báo đòn", (s, e) => { if (feedOv != null) { feedOv.Wanted = true; feedOv.Demo(); } }));
         rowFeed.Controls.Add(new Label { Text = "Đổi vị trí: mở khoá (Ctrl+F9) → kéo khung nét đứt, lăn chuột đổi cỡ → khoá lại.", AutoSize = true, ForeColor = Color.Gray, Margin = new Padding(8, 8, 0, 0) });
         lay.Controls.Add(rowFeed);
-        // nút đổi nhịp gọi combatlog: 2 s <-> 0,5 s (0,5 s = mượt hơn nhưng gọi server nhiều gấp 4) + nút quét khoá PVN
-        pvnCombat.PollMs = LoadSetting("combatms", "2000") == "500" ? 500 : 2000;
+        // dòng hiện nhịp gọi combatlog (tự động: 2 s, có đòn -> 0,5 s trong 60 s) + nút quét khoá PVN
         var rowCombat = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 4, 0, 0) };
-        btnCombatRate = MakeButton(CombatRateText(), (s, e) =>
-        {
-            pvnCombat.PollMs = pvnCombat.PollMs == 500 ? 2000 : 500;
-            SaveSetting("combatms", pvnCombat.PollMs.ToString());
-            btnCombatRate.Text = CombatRateText();
-        });
+        lblCombatRate = new Label { Text = CombatRateText(), AutoSize = true, Margin = new Padding(0, 8, 12, 0) };
         btnScanKey = MakeButton("Quét khoá PVN", (s, e) => ScanPvnKey());
-        rowCombat.Controls.Add(btnCombatRate); rowCombat.Controls.Add(btnScanKey);
+        rowCombat.Controls.Add(lblCombatRate); rowCombat.Controls.Add(btnScanKey);
         lay.Controls.Add(rowCombat);
         lblPvnKey = new Label { AutoSize = true, MaximumSize = new Size(760, 0), Margin = new Padding(0, 4, 0, 0) };
         lay.Controls.Add(lblPvnKey);
@@ -1254,6 +1260,7 @@ class MainForm : Form
     {
         if (feedOv != null) feedOv.Active = ovWanted || (liveRp != null && liveRunning);
         DrainCombatHits();
+        RefreshCombatRateText();
         if (!ovWanted) return;
         overlay.Tick();
         if (overlay.IsOpen) { ovSeen = true; return; }
