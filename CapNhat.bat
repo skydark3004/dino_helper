@@ -38,9 +38,7 @@ if errorlevel 1 (
 )
 
 rem May lap trinh (sua ma nguon chua commit): khong cap nhat de khoi mat code
-if defined AUTO (
-    for /f "delims=" %%S in ('git status --porcelain -- src') do set DEVCHG=1
-)
+for /f "delims=" %%S in ('git status --porcelain -- src') do set DEVCHG=1
 if defined DEVCHG (
     echo  Co thay doi chua commit trong src - bo qua cap nhat.
     goto :end
@@ -73,6 +71,14 @@ if errorlevel 1 (
     echo.
     echo  [LOI] Khong tai duoc. Kiem tra mang / tai khoan GitHub roi chay lai.
     set FAIL=1
+    goto :end
+)
+
+rem May lap trinh: co commit chua push -> KHONG reset (reset --hard se xoa commit do)
+set AHEAD=
+for /f "delims=" %%A in ('git rev-list @{u}..HEAD 2^>nul') do set AHEAD=1
+if defined AHEAD (
+    echo  Co commit chua push tren may nay - bo qua cap nhat.
     goto :end
 )
 
