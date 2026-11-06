@@ -121,7 +121,14 @@ class MainForm : Form
         ClientSize = new Size(840, 760);
         MinimumSize = new Size(720, 620);
         StartPosition = FormStartPosition.CenterScreen;
-        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+        // icon khủng long ôm trứng (app.ico nhúng vào exe: /win32icon cho Explorer, /resource cho cửa sổ + thanh taskbar – đủ cỡ 16…256)
+        try
+        {
+            using (var rs = System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream("app.ico"))
+                if (rs != null) Icon = new Icon(rs, SystemInformation.IconSize);
+        }
+        catch { }
+        if (Icon == null) { try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { } }
 
         // khung ngoài: 2 tab ở trên, ô log dùng chung ở dưới
         var outer = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(8), ColumnCount = 1, RowCount = 2 };

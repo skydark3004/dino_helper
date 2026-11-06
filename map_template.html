@@ -180,8 +180,24 @@ function splitDead(list) {
 let actors = DATA ? (DATA.actors = splitDead(DATA.actors)) : [];
 let me =actors.find(a => a.c === "me");
 let FRIENDS = new Set(); // tên bạn bè/group PVN (chữ thường), tool gửi qua SSE "friends"
+let FRIEND_POS = [];     // bạn bè kèm vị trí từ PVN: {n,l,s,x,y,h,act} (act = đối tượng giả để vẽ như người chơi)
 const FRIEND_HEX = "#4cd964";
-const isFriend = a => a.c === "player" && !!a.n && FRIENDS.has(String(a.n).trim().toLowerCase());
+// tên người chơi nằm ở a.p (a.n là tên loài)
+const isFriend = a => a.c === "player" && !!a.p && FRIENDS.has(String(a.p).trim().toLowerCase());
+// Bạn bè PVN đang online mà replay KHÔNG có (ngoài tầm server gửi ~500 m): vẽ tại vị trí PVN báo, chỉ khi xem trực tiếp.
+// Con nào replay đã có (cùng tên, đang hiện) thì bỏ qua để khỏi vẽ trùng.
+function pvnFriendActors(time) {
+  if (!FRIEND_POS.length || !DATA || !DATA.live || !follow) return [];
+  const mp = me ? posAt(me, time) : null;
+  const out = [];
+  for (const f of FRIEND_POS) {
+    if (!f.act) continue;
+    if (actors.some(a => a.c === "player" && a.p && String(a.p).trim().toLowerCase() === f.n && posAt(a, time))) continue;
+    f.act.t[0][3] = mp ? mp[3] : 0; // PVN không có độ cao -> coi cùng độ cao với bạn (khoảng cách ngang)
+    out.push(f.act);
+  }
+  return out;
+}
 const dotHex = a => isFriend(a) ? FRIEND_HEX : CATS[a.c].hex;
 let follow = true; // đang xem thời điểm mới nhất (kéo thanh thời gian lùi lại / bấm Phát -> false)
 let t = DATA ? DATA.length : 0, /* mặc định xem thời điểm mới nhất */ playing = false, speed = 5, view = { cx: 0, cy: 0, s: 0.002 };
@@ -398,7 +414,17 @@ if (location.protocol.startsWith("http") && window.EventSource) {
     try { const d = JSON.parse(e.data); gw.heat = d && d.ok && Array.isArray(d.cells) ? d.cells : null; } catch (err) { gw.heat = null; }
     gw.heatVer++; if (gw.heatCnt) gw.heatCnt.textContent = gw.heat ? gw.heat.length : ""; draw();
   });
-  es.addEventListener("friends", e => { try { FRIENDS = new Set(JSON.parse(e.data)); } catch (err) { FRIENDS = new Set(); } draw(); }); // bạn bè PVN -> chấm xanh
+  es.addEventListener("friends", e => { // bạn bè PVN -> chấm xanh (+ vị trí để vẽ cả người ngoài tầm replay)
+    try {
+      const arr = JSON.parse(e.data);
+      FRIENDS = new Set(arr.map(f => typeof f === "string" ? f : f.n));
+      FRIEND_POS = arr.filter(f => f && typeof f === "object" && typeof f.x === "number").map(f => {
+        f.act = { c: "player", p: f.l || f.n, n: "PVN", i: "pvn:" + (f.s || f.n), o: 0, t: [[0, f.x, f.y, 0]], pvn: 1 };
+        return f;
+      });
+    } catch (err) { FRIENDS = new Set(); FRIEND_POS = []; }
+    draw();
+  });
   es.addEventListener("layers", e => { try { pendingLayers = JSON.parse(e.data); applyLayers(pendingLayers); } catch (err) {} });
 } else {
   // Mở thẳng file map.html: tự kiểm tra version.js
@@ -978,10 +1004,11 @@ function render() {
   const order = ["meat", "fish", "animal", "corpse", "dino", "player", "me"];
   const labels = [];
   meArrow = null;
+  const drawList = FRIEND_POS.length ? actors.concat(pvnFriendActors(t)) : actors; // + bạn bè PVN ngoài tầm replay
   for (const c of order) {
     if (!CATS[c] || !CATS[c].on) continue;
     ctx.fillStyle = CATS[c].hex;
-    for (const a of actors) {
+    for (const a of drawList) {
       if (a.c !== c) continue;
       const p = posAt(a, t);
       if (!p) {
@@ -1139,7 +1166,7 @@ function updateSide() {
   const name = a => esc(a.p || viName(a.n)) + (a.c === "corpse" ? " (xác)" : "");
 
   // danh sách gần nhất
-  const list = actors.filter(a => ["player", "dino", "corpse", "animal"].includes(a.c) && CATS[a.c].on).map(a => { const p = posAt(a, t); return p ? { a, g: guide(mp, myHead, p) } : null; })
+  const list = actors.concat(pvnFriendActors(t)).filter(a => ["player", "dino", "corpse", "animal"].includes(a.c) && CATS[a.c].on).map(a => { const p = posAt(a, t); return p ? { a, g: guide(mp, myHead, p) } : null; })
     .filter(Boolean).sort((x, y) => x.g.d - y.g.d).slice(0, 8);
   const ng = gw.gastroOn ? nearestGastro(mp) : null;
   const gastroHtml = ng ? `<div><span class="sw" style="display:inline-block;background:#d9d4c3;border-radius:2px"></span> Sỏi gần nhất – <b>${guideShort(guide(mp, myHead, [0, ng.g[0], ng.g[1], mp[3]]))}</b></div>` : "";
